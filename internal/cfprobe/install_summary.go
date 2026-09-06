@@ -15,6 +15,10 @@ const (
 	labelCUNode      = "CU\u8282\u70b9"
 	labelCMNode      = "CM\u8282\u70b9"
 	labelBDNode      = "BD\u8282\u70b9"
+	labelNode1       = "Node 1"
+	labelNode2       = "Node 2"
+	labelNode3       = "Node 3"
+	labelNode4       = "Node 4"
 	bullet           = "\u25cf"
 )
 
@@ -28,6 +32,10 @@ func printProbeNodes(opts InstallOptions) {
 	printProbeNode(labelCUNode, opts.CUNode)
 	printProbeNode(labelCMNode, opts.CMNode)
 	printProbeNode(labelBDNode, opts.BDNode)
+	printProbeNode(labelNode1, opts.Node1)
+	printProbeNode(labelNode2, opts.Node2)
+	printProbeNode(labelNode3, opts.Node3)
+	printProbeNode(labelNode4, opts.Node4)
 }
 
 func printProbeNode(label, value string) {

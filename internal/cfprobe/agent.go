@@ -60,8 +60,8 @@ type Agent struct {
 const (
 	agentWSSModeDisabled          = "disabled"
 	agentWSSScheduleDisabled      = "wss_disabled"
-	metricsProbeInterval          = 10 * time.Second
-	metricsProbeMedianWindow      = time.Minute
+	metricsProbeInterval          = 20 * time.Second
+	metricsProbeMedianWindow      = 2 * time.Minute
 	metricsProbeWindowSampleCount = 6
 	metricsProbeSampleCount       = 1
 	configStateReportInterval     = time.Minute
@@ -542,10 +542,18 @@ func (a *Agent) buildMetrics(cfg Config, cpu string, netNow NetBytes, rxSpeed, t
 		PingCU:       probeRTTValue(cfg.CUNode, probes.CU),
 		PingCM:       probeRTTValue(cfg.CMNode, probes.CM),
 		PingBD:       probeRTTValue(cfg.BDNode, probes.BD),
+		PingNode1:    probeRTTValue(cfg.Node1, probes.Node1),
+		PingNode2:    probeRTTValue(cfg.Node2, probes.Node2),
+		PingNode3:    probeRTTValue(cfg.Node3, probes.Node3),
+		PingNode4:    probeRTTValue(cfg.Node4, probes.Node4),
 		LossCT:       probeLossValue(cfg.CTNode, probes.CT),
 		LossCU:       probeLossValue(cfg.CUNode, probes.CU),
 		LossCM:       probeLossValue(cfg.CMNode, probes.CM),
 		LossBD:       probeLossValue(cfg.BDNode, probes.BD),
+		LossNode1:    probeLossValue(cfg.Node1, probes.Node1),
+		LossNode2:    probeLossValue(cfg.Node2, probes.Node2),
+		LossNode3:    probeLossValue(cfg.Node3, probes.Node3),
+		LossNode4:    probeLossValue(cfg.Node4, probes.Node4),
 	}
 }
 
@@ -771,7 +779,7 @@ func valueOrZero[T ~int64 | ~uint64](value *T) T {
 
 func (a *Agent) networkWorker(ctx context.Context) {
 	var lastIP, lastProbe time.Time
-	var ctHistory, cuHistory, cmHistory, bdHistory rollingProbeHistory
+	var ctHistory, cuHistory, cmHistory, bdHistory, node1History, node2History, node3History, node4History rollingProbeHistory
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 	for {
@@ -794,10 +802,18 @@ func (a *Agent) networkWorker(ctx context.Context) {
 				cuHistory.add(now, probeHistoryKey(cfg.PingMode, cfg.CUNode), measureProbe(cfg.PingMode, cfg.CUNode, metricsProbeSampleCount, defaultMetricsTCPPort, a.log))
 				cmHistory.add(now, probeHistoryKey(cfg.PingMode, cfg.CMNode), measureProbe(cfg.PingMode, cfg.CMNode, metricsProbeSampleCount, defaultMetricsTCPPort, a.log))
 				bdHistory.add(now, probeHistoryKey(cfg.PingMode, cfg.BDNode), measureProbe(cfg.PingMode, cfg.BDNode, metricsProbeSampleCount, defaultMetricsTCPPort, a.log))
+				node1History.add(now, probeHistoryKey(cfg.PingMode, cfg.Node1), measureProbe(cfg.PingMode, cfg.Node1, metricsProbeSampleCount, defaultMetricsTCPPort, a.log))
+				node2History.add(now, probeHistoryKey(cfg.PingMode, cfg.Node2), measureProbe(cfg.PingMode, cfg.Node2, metricsProbeSampleCount, defaultMetricsTCPPort, a.log))
+				node3History.add(now, probeHistoryKey(cfg.PingMode, cfg.Node3), measureProbe(cfg.PingMode, cfg.Node3, metricsProbeSampleCount, defaultMetricsTCPPort, a.log))
+				node4History.add(now, probeHistoryKey(cfg.PingMode, cfg.Node4), measureProbe(cfg.PingMode, cfg.Node4, metricsProbeSampleCount, defaultMetricsTCPPort, a.log))
 				snap.CT = ctHistory.snapshot(now)
 				snap.CU = cuHistory.snapshot(now)
 				snap.CM = cmHistory.snapshot(now)
 				snap.BD = bdHistory.snapshot(now)
+				snap.Node1 = node1History.snapshot(now)
+				snap.Node2 = node2History.snapshot(now)
+				snap.Node3 = node3History.snapshot(now)
+				snap.Node4 = node4History.snapshot(now)
 				lastProbe = now
 				needUpdate = true
 			}
@@ -820,6 +836,18 @@ func (a *Agent) networkWorker(ctx context.Context) {
 				}
 				if snap.BD == (ProbeResult{}) {
 					snap.BD = a.probes.BD
+				}
+				if snap.Node1 == (ProbeResult{}) {
+					snap.Node1 = a.probes.Node1
+				}
+				if snap.Node2 == (ProbeResult{}) {
+					snap.Node2 = a.probes.Node2
+				}
+				if snap.Node3 == (ProbeResult{}) {
+					snap.Node3 = a.probes.Node3
+				}
+				if snap.Node4 == (ProbeResult{}) {
+					snap.Node4 = a.probes.Node4
 				}
 				a.probes = snap
 				a.mu.Unlock()
@@ -885,6 +913,10 @@ func (a *Agent) applyRemoteConfigWithOptions(body []byte, headers http.Header, a
 		"custom_cu":           true,
 		"custom_cm":           true,
 		"custom_bd":           true,
+		"node_1":              true,
+		"node_2":              true,
+		"node_3":              true,
+		"node_4":              true,
 		"interface":           true,
 		"connection_mode":     true,
 		"ping_mode":           true,
@@ -901,7 +933,7 @@ func (a *Agent) applyRemoteConfigWithOptions(body []byte, headers http.Header, a
 	if update != "" && update != "0" && update != "1" {
 		return fmt.Errorf("invalid update %s", update)
 	}
-	hasConfig := values.Has("collect_interval") || values.Has("report_interval") || values.Has("wss_report_interval") || values.Has("reset_day") || values.Has("schema_version") || values.Has("interface") || values.Has("connection_mode") || values.Has("ping_mode")
+	hasConfig := values.Has("collect_interval") || values.Has("report_interval") || values.Has("wss_report_interval") || values.Has("reset_day") || values.Has("schema_version") || values.Has("interface") || values.Has("connection_mode") || values.Has("ping_mode") || values.Has("node_1") || values.Has("node_2") || values.Has("node_3") || values.Has("node_4")
 	hasCorrection := values.Has("rx_correction") || values.Has("tx_correction")
 	cfg := a.configSnapshot()
 	if !hasConfig {
@@ -980,6 +1012,10 @@ func (a *Agent) applyRemoteConfigWithOptions(body []byte, headers http.Header, a
 		nextCfg.CUNode = values.Get("custom_cu")
 		nextCfg.CMNode = values.Get("custom_cm")
 		nextCfg.BDNode = values.Get("custom_bd")
+		nextCfg.Node1 = values.Get("node_1")
+		nextCfg.Node2 = values.Get("node_2")
+		nextCfg.Node3 = values.Get("node_3")
+		nextCfg.Node4 = values.Get("node_4")
 		nextCfg.Interface = iface
 		nextCfg.ConnectionMode = connectionMode
 		nextCfg.PingMode = pingMode
@@ -1054,6 +1090,10 @@ func remoteConfigDiffers(cfg Config, values url.Values, collect, report, reset i
 		cfg.CUNode != values.Get("custom_cu") ||
 		cfg.CMNode != values.Get("custom_cm") ||
 		cfg.BDNode != values.Get("custom_bd") ||
+		cfg.Node1 != values.Get("node_1") ||
+		cfg.Node2 != values.Get("node_2") ||
+		cfg.Node3 != values.Get("node_3") ||
+		cfg.Node4 != values.Get("node_4") ||
 		cfg.Interface != iface ||
 		cfg.ConnectionMode != connectionMode ||
 		cfg.PingMode != pingMode

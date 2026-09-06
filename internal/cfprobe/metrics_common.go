@@ -220,10 +220,18 @@ func metricsToMap(m Metrics) map[string]any {
 		"ping_cu":        m.PingCU,
 		"ping_cm":        m.PingCM,
 		"ping_bd":        m.PingBD,
+		"ping_node_1":    m.PingNode1,
+		"ping_node_2":    m.PingNode2,
+		"ping_node_3":    m.PingNode3,
+		"ping_node_4":    m.PingNode4,
 		"loss_ct":        m.LossCT,
 		"loss_cu":        m.LossCU,
 		"loss_cm":        m.LossCM,
 		"loss_bd":        m.LossBD,
+		"loss_node_1":    m.LossNode1,
+		"loss_node_2":    m.LossNode2,
+		"loss_node_3":    m.LossNode3,
+		"loss_node_4":    m.LossNode4,
 	}
 }
 

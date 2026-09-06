@@ -7,7 +7,7 @@ const (
 	legacyAgentVersion          = "1.0.0"
 	maxTrafficCorrectionGB      = 1000000
 	autoUpdateDelay             = 60 * time.Second
-	configSchemaVersion         = "6"
+	configSchemaVersion         = "7"
 	defaultReportIntervalSec    = 60
 	defaultWSSReportIntervalSec = 2
 	minWSSReportIntervalSec     = 1
@@ -28,6 +28,10 @@ type Config struct {
 	CUNode          string
 	CMNode          string
 	BDNode          string
+	Node1           string
+	Node2           string
+	Node3           string
+	Node4           string
 	Interface       string
 	ResetDay        int
 	ConnectionMode  string
@@ -75,12 +79,16 @@ type ProbeResult struct {
 }
 
 type ProbeSnapshot struct {
-	IPv4 string
-	IPv6 string
-	CT   ProbeResult
-	CU   ProbeResult
-	CM   ProbeResult
-	BD   ProbeResult
+	IPv4  string
+	IPv6  string
+	CT    ProbeResult
+	CU    ProbeResult
+	CM    ProbeResult
+	BD    ProbeResult
+	Node1 ProbeResult
+	Node2 ProbeResult
+	Node3 ProbeResult
+	Node4 ProbeResult
 }
 
 type Metrics struct {
@@ -115,10 +123,18 @@ type Metrics struct {
 	PingCU       any
 	PingCM       any
 	PingBD       any
+	PingNode1    any
+	PingNode2    any
+	PingNode3    any
+	PingNode4    any
 	LossCT       any
 	LossCU       any
 	LossCM       any
 	LossBD       any
+	LossNode1    any
+	LossNode2    any
+	LossNode3    any
+	LossNode4    any
 }
 
 type BasicStats struct {

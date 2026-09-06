@@ -224,7 +224,7 @@ func TestBuildProbeResultAllSamplesLost(t *testing.T) {
 	}
 }
 
-func TestRollingProbeHistoryAggregatesOneMinuteWindow(t *testing.T) {
+func TestRollingProbeHistoryAggregatesTwoMinuteWindow(t *testing.T) {
 	now := time.Unix(1000, 0)
 	history := rollingProbeHistory{}
 	results := []ProbeResult{
@@ -265,5 +265,23 @@ func TestRollingProbeHistoryKeepsSixSamples(t *testing.T) {
 	}
 	if len(history.samples) != metricsProbeWindowSampleCount {
 		t.Fatalf("samples = %d, want %d", len(history.samples), metricsProbeWindowSampleCount)
+	}
+}
+
+func TestRollingProbeHistoryUsesAvailableSamplesBeforeWindowIsFull(t *testing.T) {
+	now := time.Unix(1000, 0)
+	history := rollingProbeHistory{}
+	history.add(now, "example.com", ProbeResult{RTTMs: 40, OK: true})
+	history.add(now.Add(metricsProbeInterval), "example.com", ProbeResult{RTTMs: -1, Loss: 100, OK: false})
+
+	got := history.snapshot(now.Add(metricsProbeInterval))
+	if !got.OK {
+		t.Fatal("expected available successful sample to produce an OK result")
+	}
+	if got.RTTMs != 40 {
+		t.Fatalf("RTTMs = %d, want 40", got.RTTMs)
+	}
+	if got.Loss != 50 {
+		t.Fatalf("Loss = %d, want 50", got.Loss)
 	}
 }

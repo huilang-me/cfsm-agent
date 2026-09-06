@@ -741,13 +741,13 @@ func TestWSSConfigBodySupportsPayloadObject(t *testing.T) {
 func TestWSSConfigBodySupportsConfigBodyAndConfigObject(t *testing.T) {
 	body, headers, ok := wssConfigBodyAndHeaders(wsServerFrame{
 		Type:       "ack",
-		ConfigBody: "collect_interval=0&report_interval=60&reset_day=1&schema_version=6&interface=&connection_mode=auto&ping_mode=tcp",
+		ConfigBody: "collect_interval=0&report_interval=60&reset_day=1&schema_version=7&interface=&node_1=&node_2=&node_3=&node_4=&connection_mode=auto&ping_mode=tcp",
 		ConfigMD5:  "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
 	})
 	if !ok {
 		t.Fatal("config_body frame returned ok=false")
 	}
-	if string(body) != "collect_interval=0&report_interval=60&reset_day=1&schema_version=6&interface=&connection_mode=auto&ping_mode=tcp" {
+	if string(body) != "collect_interval=0&report_interval=60&reset_day=1&schema_version=7&interface=&node_1=&node_2=&node_3=&node_4=&connection_mode=auto&ping_mode=tcp" {
 		t.Fatalf("body = %q", string(body))
 	}
 	if headers.Get("X-Agent-Config-Md5") != "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" {
@@ -804,7 +804,7 @@ func TestReportTransportWSSConfigAppliesRemoteConfig(t *testing.T) {
 	transport := reportTransport{agent: &agent}
 	transport.handleConfigFrame(wsServerFrame{
 		Type:      "config",
-		Config:    "collect_interval=10&report_interval=120&wss_report_interval=4&reset_day=1&schema_version=6&interface=&connection_mode=auto&ping_mode=icmp",
+		Config:    "collect_interval=10&report_interval=120&wss_report_interval=4&reset_day=1&schema_version=7&interface=&node_1=&node_2=&node_3=&node_4=&connection_mode=auto&ping_mode=icmp",
 		ConfigMD5: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
 	})
 
@@ -857,7 +857,7 @@ func TestReportTransportWSSConfigCanSwitchToHTTP(t *testing.T) {
 	agent.reporter = &transport
 	transport.handleConfigFrame(wsServerFrame{
 		Type:      "config",
-		Config:    "collect_interval=0&report_interval=60&reset_day=1&schema_version=6&interface=&connection_mode=http&ping_mode=tcp",
+		Config:    "collect_interval=0&report_interval=60&reset_day=1&schema_version=7&interface=&node_1=&node_2=&node_3=&node_4=&connection_mode=http&ping_mode=tcp",
 		ConfigMD5: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
 	})
 
@@ -893,7 +893,7 @@ func TestReportTransportWSSConfigAllowsMissingMD5(t *testing.T) {
 	transport := reportTransport{agent: &agent}
 	transport.handleConfigFrame(wsServerFrame{
 		Type:   "config",
-		Config: "collect_interval=0&report_interval=120&reset_day=1&schema_version=6&interface=&connection_mode=auto&ping_mode=tcp",
+		Config: "collect_interval=0&report_interval=120&reset_day=1&schema_version=7&interface=&node_1=&node_2=&node_3=&node_4=&connection_mode=auto&ping_mode=tcp",
 	})
 
 	if agent.cfg.ReportInterval != 120 {
@@ -921,11 +921,11 @@ func TestReportTransportWSSConfigThrottlesToOneMinute(t *testing.T) {
 	transport := reportTransport{agent: &agent}
 	transport.handleConfigFrame(wsServerFrame{
 		Type:   "config",
-		Config: "collect_interval=0&report_interval=120&reset_day=1&schema_version=6&interface=&connection_mode=auto&ping_mode=tcp",
+		Config: "collect_interval=0&report_interval=120&reset_day=1&schema_version=7&interface=&node_1=&node_2=&node_3=&node_4=&connection_mode=auto&ping_mode=tcp",
 	})
 	transport.handleConfigFrame(wsServerFrame{
 		Type:   "config",
-		Config: "collect_interval=0&report_interval=180&reset_day=1&schema_version=6&interface=&connection_mode=auto&ping_mode=tcp",
+		Config: "collect_interval=0&report_interval=180&reset_day=1&schema_version=7&interface=&node_1=&node_2=&node_3=&node_4=&connection_mode=auto&ping_mode=tcp",
 	})
 	if agent.cfg.ReportInterval != 120 {
 		t.Fatalf("ReportInterval after throttled config = %d, want 120", agent.cfg.ReportInterval)
@@ -936,7 +936,7 @@ func TestReportTransportWSSConfigThrottlesToOneMinute(t *testing.T) {
 	transport.mu.Unlock()
 	transport.handleConfigFrame(wsServerFrame{
 		Type:   "config",
-		Config: "collect_interval=0&report_interval=180&reset_day=1&schema_version=6&interface=&connection_mode=auto&ping_mode=tcp",
+		Config: "collect_interval=0&report_interval=180&reset_day=1&schema_version=7&interface=&node_1=&node_2=&node_3=&node_4=&connection_mode=auto&ping_mode=tcp",
 	})
 	if agent.cfg.ReportInterval != 180 {
 		t.Fatalf("ReportInterval after throttle window = %d, want 180", agent.cfg.ReportInterval)
