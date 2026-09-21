@@ -23,35 +23,8 @@ wget -O- https://raw.githubusercontent.com/huilang-me/cfsm-agent/main/install.sh
 ```
 
 ### 普通用户安装（非 root）
-仅支持 `systemd --user` 的 Linux 可使用非 root 安装；执行安装时会使用当前用户，不会新建用户；二进制、配置和流量文件会写入 `~/.cf-probe/`，自启动使用 `systemd --user`。Synology DSM、OpenWrt、Alpine/OpenRC 以及其他不支持 `systemd --user` 的系统请使用 root 权限安装。部分 Linux 系统从旧的 root Go 版切换到非 root 安装时，建议先在 root 下卸载旧版：
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/huilang-me/cfsm-agent/main/install.sh | sh -s -- uninstall
-```
-
-macOS 固定使用当前普通用户安装，写入 `~/.cf-probe/`，自启动使用 `~/Library/LaunchAgents/`，不要使用 `sudo/root` 安装。macOS 如果检测到旧的 root/system 版本，会提示先执行 `sudo /usr/local/bin/cf-probe uninstall` 清理旧版，再以普通用户安装。
-
-支持 `systemd --user` 的 Linux 如果已有非 root 用户，先直接登录该用户并开启 linger，以支持退出登录后后台运行和自启动：
-
-```bash
-loginctl enable-linger
-```
-
-如果当前用户执行无权限，再切回 root 为该用户开启：
-
-```bash
-loginctl enable-linger 用户名
-```
-
-如果没有非 root 用户，可先新建用户并设置密码或 SSH 密钥：
-
-```bash
-useradd -m -s /bin/bash cfsm
-loginctl enable-linger cfsm
-passwd cfsm
-```
-
-随后退出 root/su 会话，使用账户密码或 SSH 密钥登录该非 root 用户，再复制后台安装命令执行。不要在 root shell 中直接 `su` 后安装，否则当前会话可能无法连接 `systemd --user` 用户服务（例如 `Failed to connect to bus: No medium found`）。如果 Linux 环境不支持 `systemd --user`，请改用 root 安装；如果检测到 root/system 旧版本安装，当前版本会提示先清理旧版本，暂不自动迁移。
+支持 `systemd --user` 的 Linux 可使用非 root 安装；执行安装时会使用当前用户，不会新建用户；二进制、配置和流量文件会写入 `~/.cf-probe/`，自启动使用 `systemd --user`。Synology DSM、OpenWrt、Alpine/OpenRC 以及其他不支持 `systemd --user` 的系统请使用 root 权限安装。部分 Linux 系统从旧的 root Go 版切换到非 root 安装时，需要先在 root 下卸载旧版 agent.
 
 ## Windows 安装
 
@@ -115,7 +88,7 @@ curl -fsSL https://raw.githubusercontent.com/huilang-me/cfsm-agent/main/install.
 | 系统 | 二进制默认位置 | 配置文件 | 日志 |
 | --- | --- | --- | --- |
 | Linux non-root (`systemd --user`) | `~/.cf-probe/bin/cf-probe` | `~/.cf-probe/config.conf` | `journalctl --user -u cf-probe -f` |
-| Linux / Synology DSM | `/usr/local/bin/cf-probe` | `/etc/config/cf-probe/config.conf` | `/var/log/cf-probe.log` |
+| Linux / Synology DSM | `/usr/local/bin/cf-probe` | `/etc/config/cf-probe/config.conf` | `journalctl -u cf-probe -f` |
 | OpenWrt | `/usr/bin/cf-probe` | `/etc/config/cf-probe/config.conf` | `/var/log/cf-probe.log` |
 | FreeBSD | `/usr/local/bin/cf-probe` | `/etc/config/cf-probe/config.conf` | `/var/log/cf-probe.log` |
 | macOS (`LaunchAgent`) | `~/.cf-probe/bin/cf-probe` | `~/.cf-probe/config.conf` | `~/.cf-probe/cf-probe.log` |
