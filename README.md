@@ -418,6 +418,12 @@ Linux 下磁盘 IO 使用 `/proc/diskstats` 计算，并复用磁盘容量统计
 | `name` | string | GPU 名称 |
 | `info` | number/null | GPU 使用率或平台兜底值 |
 | `id` | string | GPU 序号或平台标识 |
+| `mem_used` | number/省略 | 已用显存，MiB |
+| `mem_total` | number/省略 | 显存总量，MiB |
+| `sm_clock` | number/省略 | SM 频率，MHz |
+| `power` | number/省略 | 功耗，W |
+
+`mem_used`、`mem_total`、`sm_clock`、`power` 来自 `nvidia-smi` 详情查询（`memory.used`、`memory.total`、`clocks.sm`、`power.draw`），仅在可获取时上报，单位不支持时为 `[N/A]` 会直接省略该字段；旧驱动不支持上述字段时回退为仅上报使用率。
 
 POST fallback 会携带以下 HTTP 头：
 

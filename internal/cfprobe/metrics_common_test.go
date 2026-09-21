@@ -1,6 +1,9 @@
 package cfprobe
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 func TestCPUUsagePercentFromZeroPrevious(t *testing.T) {
 	got, ok := cpuUsagePercent(cpuTimes{}, cpuTimes{Total: 100, Idle: 75})
@@ -133,5 +136,120 @@ func TestSwapUsedMBFromKB(t *testing.T) {
 func TestSwapUsedMBFromKBClampsNegativeUsage(t *testing.T) {
 	if got := swapUsedMBFromKB(1*1024, 4*1024); got != 0 {
 		t.Fatalf("got %d, want 0", got)
+	}
+}
+
+func TestParseNvidiaSMILegacyOutput(t *testing.T) {
+	gpus := parseNvidiaSMI("0, NVIDIA GeForce RTX 3060, 12\n1, NVIDIA GeForce RTX 3060, 87\n", nvidiaSMILegacyTail)
+	if len(gpus) != 2 {
+		t.Fatalf("got %d gpus, want 2", len(gpus))
+	}
+	if gpus[0].ID != "0" || gpus[0].Name != "NVIDIA GeForce RTX 3060" || gpus[0].Info != float64(12) {
+		t.Fatalf("got %+v, want id 0 name NVIDIA GeForce RTX 3060 info 12", gpus[0])
+	}
+	if gpus[1].Info != float64(87) {
+		t.Fatalf("got info %v, want 87", gpus[1].Info)
+	}
+	if gpus[0].MemUsed != nil || gpus[0].MemTotal != nil || gpus[0].SMClock != nil || gpus[0].Power != nil {
+		t.Fatalf("legacy parse should leave detail fields nil, got %+v", gpus[0])
+	}
+}
+
+func TestParseNvidiaSMILegacyOutputWithCommaInName(t *testing.T) {
+	gpus := parseNvidiaSMI("0, NVIDIA Tesla, T4, 5\n", nvidiaSMILegacyTail)
+	if len(gpus) != 1 {
+		t.Fatalf("got %d gpus, want 1", len(gpus))
+	}
+	if gpus[0].Name != "NVIDIA Tesla, T4" {
+		t.Fatalf("got name %q, want NVIDIA Tesla, T4", gpus[0].Name)
+	}
+	if gpus[0].Info != float64(5) {
+		t.Fatalf("got info %v, want 5", gpus[0].Info)
+	}
+}
+
+func TestParseNvidiaSMIDetailOutput(t *testing.T) {
+	gpus := parseNvidiaSMI("0, NVIDIA GeForce RTX 4090, 55, 9216, 24564, 2520, 328.5\n1, NVIDIA A100, 0, 1024, 81920, [N/A], N/A\n", nvidiaSMIDetailTail)
+	if len(gpus) != 2 {
+		t.Fatalf("got %d gpus, want 2", len(gpus))
+	}
+	first := gpus[0]
+	if first.ID != "0" || first.Name != "NVIDIA GeForce RTX 4090" || first.Info != float64(55) {
+		t.Fatalf("got %+v, want id 0 name NVIDIA GeForce RTX 4090 info 55", first)
+	}
+	if first.MemUsed != float64(9216) || first.MemTotal != float64(24564) || first.SMClock != float64(2520) || first.Power != 328.5 {
+		t.Fatalf("got detail %+v, want 9216/24564/2520/328.5", first)
+	}
+	second := gpus[1]
+	if second.MemUsed != float64(1024) || second.MemTotal != float64(81920) {
+		t.Fatalf("got detail %+v, want mem 1024/81920", second)
+	}
+	if second.SMClock != nil || second.Power != nil {
+		t.Fatalf("unsupported values should parse to nil, got %+v", second)
+	}
+}
+
+func TestParseNvidiaSMIDetailOutputWithCommaInName(t *testing.T) {
+	gpus := parseNvidiaSMI("0, NVIDIA Tesla, T4, 10, 100, 1000, 100, 50\n", nvidiaSMIDetailTail)
+	if len(gpus) != 1 {
+		t.Fatalf("got %d gpus, want 1", len(gpus))
+	}
+	if gpus[0].Name != "NVIDIA Tesla, T4" {
+		t.Fatalf("got name %q, want NVIDIA Tesla, T4", gpus[0].Name)
+	}
+	if gpus[0].Info != float64(10) || gpus[0].MemUsed != float64(100) || gpus[0].MemTotal != float64(1000) || gpus[0].SMClock != float64(100) || gpus[0].Power != float64(50) {
+		t.Fatalf("got %+v, want 10/100/1000/100/50", gpus[0])
+	}
+}
+
+func TestParseNvidiaSMISkipsShortLines(t *testing.T) {
+	if gpus := parseNvidiaSMI("0, 12\n\n1, NVIDIA GPU, 3\n", nvidiaSMILegacyTail); len(gpus) != 1 {
+		t.Fatalf("got %d gpus, want 1", len(gpus))
+	}
+	if gpus := parseNvidiaSMI("0, NVIDIA GPU, 12, 100, 1000, 2520\n", nvidiaSMIDetailTail); len(gpus) != 0 {
+		t.Fatalf("got %d gpus, want 0", len(gpus))
+	}
+}
+
+func TestParseNvidiaFloat(t *testing.T) {
+	cases := []struct {
+		in   string
+		want any
+	}{
+		{" 12.5 ", 12.5},
+		{"2520", 2520.0},
+		{"[N/A]", nil},
+		{"N/A", nil},
+		{"n/a", nil},
+		{"NOT SUPPORTED", nil},
+		{"", nil},
+		{"abc", nil},
+	}
+	for _, c := range cases {
+		if got := parseNvidiaFloat(c.in); got != c.want {
+			t.Fatalf("parseNvidiaFloat(%q) = %v, want %v", c.in, got, c.want)
+		}
+	}
+}
+
+func TestGPUMetricJSONOmitsNilDetailFields(t *testing.T) {
+	data, err := json.Marshal([]gpuMetric{{Name: "NVIDIA GPU", Info: 12.5, ID: "0"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `[{"name":"NVIDIA GPU","info":12.5,"id":"0"}]`
+	if string(data) != want {
+		t.Fatalf("got %s, want %s", data, want)
+	}
+}
+
+func TestGPUMetricJSONIncludesDetailFields(t *testing.T) {
+	data, err := json.Marshal([]gpuMetric{{Name: "NVIDIA GPU", Info: 12.5, ID: "0", MemUsed: 100, MemTotal: 24564, SMClock: 2520, Power: 328.5}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `[{"name":"NVIDIA GPU","info":12.5,"id":"0","mem_used":100,"mem_total":24564,"sm_clock":2520,"power":328.5}]`
+	if string(data) != want {
+		t.Fatalf("got %s, want %s", data, want)
 	}
 }

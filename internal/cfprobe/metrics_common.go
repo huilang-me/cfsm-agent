@@ -17,9 +17,13 @@ type cpuTimes struct {
 }
 
 type gpuMetric struct {
-	Name string `json:"name"`
-	Info any    `json:"info"`
-	ID   string `json:"id"`
+	Name     string `json:"name"`
+	Info     any    `json:"info"`
+	ID       string `json:"id"`
+	MemUsed  any    `json:"mem_used,omitempty"`
+	MemTotal any    `json:"mem_total,omitempty"`
+	SMClock  any    `json:"sm_clock,omitempty"`
+	Power    any    `json:"power,omitempty"`
 }
 
 const bytesPerMiB = 1024 * 1024
@@ -147,10 +151,19 @@ func parseFirstUint(raw string) uint64 {
 	return n
 }
 
+const (
+	nvidiaSMILegacyTail = 1
+	nvidiaSMIDetailTail = 5
+)
+
 func detectGPUInfo() any {
 	if commandExists("nvidia-smi") {
-		out := commandOutput("nvidia-smi", "--query-gpu=index,name,utilization.gpu", "--format=csv,noheader,nounits")
-		if info := parseNvidiaSMI(out); len(info) > 0 {
+		out := commandOutput("nvidia-smi", "--query-gpu=index,name,utilization.gpu,memory.used,memory.total,clocks.sm,power.draw", "--format=csv,noheader,nounits")
+		if info := parseNvidiaSMI(out, nvidiaSMIDetailTail); len(info) > 0 {
+			return info
+		}
+		out = commandOutput("nvidia-smi", "--query-gpu=index,name,utilization.gpu", "--format=csv,noheader,nounits")
+		if info := parseNvidiaSMI(out, nvidiaSMILegacyTail); len(info) > 0 {
 			return info
 		}
 	}
@@ -163,7 +176,7 @@ func detectGPUInfo() any {
 	return nil
 }
 
-func parseNvidiaSMI(out string) []gpuMetric {
+func parseNvidiaSMI(out string, numericTail int) []gpuMetric {
 	var gpus []gpuMetric
 	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
 		line = strings.TrimSpace(line)
@@ -171,20 +184,35 @@ func parseNvidiaSMI(out string) []gpuMetric {
 			continue
 		}
 		parts := strings.Split(line, ",")
-		if len(parts) < 3 {
+		if numericTail < 1 || len(parts) < numericTail+2 {
 			continue
 		}
 		id := strings.TrimSpace(parts[0])
-		utilRaw := strings.TrimSpace(parts[len(parts)-1])
-		name := strings.TrimSpace(strings.Join(parts[1:len(parts)-1], ","))
-		util, err := strconv.ParseFloat(utilRaw, 64)
-		var utilAny any = nil
-		if err == nil {
-			utilAny = util
+		name := strings.TrimSpace(strings.Join(parts[1:len(parts)-numericTail], ","))
+		tail := parts[len(parts)-numericTail:]
+		gpu := gpuMetric{Name: name, Info: parseNvidiaFloat(tail[0]), ID: id}
+		if numericTail >= nvidiaSMIDetailTail {
+			gpu.MemUsed = parseNvidiaFloat(tail[1])
+			gpu.MemTotal = parseNvidiaFloat(tail[2])
+			gpu.SMClock = parseNvidiaFloat(tail[3])
+			gpu.Power = parseNvidiaFloat(tail[4])
 		}
-		gpus = append(gpus, gpuMetric{Name: name, Info: utilAny, ID: id})
+		gpus = append(gpus, gpu)
 	}
 	return gpus
+}
+
+func parseNvidiaFloat(raw string) any {
+	raw = strings.TrimSpace(raw)
+	raw = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(raw, "["), "]"))
+	if raw == "" || strings.EqualFold(raw, "N/A") || strings.EqualFold(raw, "NOT SUPPORTED") {
+		return nil
+	}
+	n, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return nil
+	}
+	return n
 }
 
 func metricsToMap(m Metrics) map[string]any {
