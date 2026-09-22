@@ -328,6 +328,11 @@ func requireInstallPermission(paths Paths) error {
 		if platform := nonRootSystemServicePlatform(); platform != "" {
 			return fmt.Errorf("%s 当前仅支持 root/system 服务安装，请使用 root 权限重新执行安装命令", platform)
 		}
+		// No service manager at all (e.g. a container without systemd): install a
+		// plain background process under the user's home, which needs no root.
+		if runtime.GOOS == "linux" && initSystem() == "background" {
+			return nil
+		}
 		if runtime.GOOS != "linux" || !systemdUserSupported() {
 			return errors.New("当前系统不支持非 root 运行（未检测到 systemd 用户服务能力），请使用 root 权限重新执行安装命令")
 		}
@@ -385,9 +390,10 @@ func nonRootSystemServicePlatform() string {
 		return "Synology DSM"
 	case "upstart":
 		return platform + "/Upstart"
-	case "background":
-		return platform + "/background"
 	}
+	// "background" (no service manager) is intentionally not listed here: a
+	// non-root user can run a plain background process, so it must not be
+	// reported as a root/system-only platform.
 	return ""
 }
 

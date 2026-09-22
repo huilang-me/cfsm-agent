@@ -334,6 +334,11 @@ func serviceSystem(paths Paths) string {
 		if runtime.GOOS == "darwin" {
 			return "launchd"
 		}
+		// Container / no service manager: fall back to a plain background
+		// process under the user's home instead of requiring systemd --user.
+		if runtime.GOOS == "linux" && initSystem() == "background" {
+			return "background"
+		}
 		return "systemd-user"
 	}
 	return initSystem()
