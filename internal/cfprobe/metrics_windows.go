@@ -34,7 +34,7 @@ func collectBasicStats() BasicStats {
 		LoadAvg:     "0 0 0",
 		BootTimeMS:  windowsBootTimeMS(),
 		OSName:      windowsOSName(),
-		Arch:        runtime.GOARCH,
+		Arch:        nativeArch(),
 		Kernel:      windowsKernelVersion(),
 		CPUInfo:     windowsCPUInfo(),
 		CPUCores:    runtime.NumCPU(),
@@ -142,7 +142,7 @@ func windowsCPUInfo() string {
 			return strings.TrimSpace(name)
 		}
 	}
-	return firstNonEmpty(windowsPowerShellOutput("(Get-CimInstance Win32_Processor | Select-Object -First 1 -ExpandProperty Name)"), runtime.GOARCH)
+	return firstNonEmpty(windowsPowerShellOutput("(Get-CimInstance Win32_Processor | Select-Object -First 1 -ExpandProperty Name)"), nativeArch())
 }
 
 func windowsCurrentBuild(key registry.Key) (int, bool) {

@@ -6,7 +6,6 @@ import (
 	"math"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 )
@@ -346,7 +345,7 @@ func toJSONSize(v any) int {
 }
 
 func fallbackArch() string {
-	return runtime.GOARCH
+	return nativeArch()
 }
 
 func firstNonEmpty(values ...string) string {

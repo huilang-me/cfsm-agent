@@ -93,7 +93,7 @@ func checkLatestUpdate(ctx context.Context, currentVersion string, usePublicDNS 
 	if err != nil {
 		return updateCandidate{}, false, err
 	}
-	assetName := expectedUpdateAssetName(runtime.GOOS, runtime.GOARCH)
+	assetName := expectedUpdateAssetName(runtime.GOOS, nativeArch())
 	releases, err := listGitHubReleases(ctx, owner, name, usePublicDNS)
 	if err != nil {
 		return updateCandidate{}, false, err

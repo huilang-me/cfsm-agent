@@ -50,7 +50,7 @@ func Install(opts InstallOptions, version string) error {
 	}
 	normalizeConfigIntervals(&opts.Config)
 
-	fmt.Printf("[INFO] Platform: %s/%s (%s)\n", runtime.GOOS, runtime.GOARCH, platformName())
+	fmt.Printf("[INFO] Platform: %s/%s (%s)\n", runtime.GOOS, nativeArch(), platformName())
 	if paths.UserMode {
 		fmt.Printf("[INFO] Install mode: user (%s)\n", firstNonEmpty(paths.RunUser, "current"))
 	} else {

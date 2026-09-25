@@ -29,6 +29,24 @@ foreach ($arg in $args) {
 }
 
 function Get-ArchName {
+    # PROCESSOR_ARCHITECTURE is emulated on Windows ARM64 (amd64 processes
+    # under Prism see "AMD64"), so prefer the true native architecture.
+    if ($env:PROCESSOR_ARCHITEW6432) {
+        switch ($env:PROCESSOR_ARCHITEW6432) {
+            "ARM64" { "arm64"; return }
+            "ARM64EC" { "arm64"; return }
+            "AMD64" { "amd64"; return }
+            "x86" { "386"; return }
+        }
+    }
+    try {
+        $cpu = Get-CimInstance -ClassName Win32_Processor -ErrorAction Stop | Select-Object -First 1
+        # 0=x86 1=MIPS 2=Alpha 6=IA64 9=x64 12=ARM64
+        if ($cpu.DeviceArchitecture -eq 12) { "arm64"; return }
+        if ($cpu.DeviceArchitecture -eq 9) { "amd64"; return }
+    } catch {
+        # Fall through to the environment variable below.
+    }
     switch ($env:PROCESSOR_ARCHITECTURE) {
         "AMD64" { "amd64"; break }
         "ARM64" { "arm64"; break }
