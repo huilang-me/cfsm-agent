@@ -1,0 +1,13 @@
+# 保持构建上下文精简;dist/ 需保留(COPY 依赖其中的目标二进制)。
+.gocache/
+.gomodcache/
+参考/
+.git/
+.gitignore
+.github/
+LICENSE
+README.md
+install-old.sh
+install.ps1
+install.sh
+*.md

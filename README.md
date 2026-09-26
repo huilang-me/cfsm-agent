@@ -432,6 +432,68 @@ WSS 握手会携带标准 WebSocket Upgrade 头，并附带以下 Agent 头：
 
 其中 `rx_correction` 和 `tx_correction` 为 number，单位 GB。该确认请求只携带 `Content-Type`、`Accept` 和 `User-Agent` 头。
 
+## Docker 部署
+
+除安装脚本外，也可以把 Agent 以容器方式运行。镜像以 `cf-probe run` 前台模式启动，后台常驻、开机自启和崩溃重启都交给 Docker 的重启策略；容器内不使用 systemd/launchd，也不会触碰裸机安装路径。
+
+镜像发布在 `ghcr.io/<owner>/cfsm-agent`，提供 `latest`、版本号和 commit sha 标签（多架构 `linux/amd64`、`linux/arm64`）。
+
+推荐以 host 网络模式运行，这样网卡流量、月流量和 TCP/UDP 连接数才是宿主机的真实数据：
+
+```bash
+docker run -d --name cf-probe \
+  --restart=unless-stopped \
+  --network=host \
+  -v cf-probe-data:/data \
+  -e SERVER_ID=SERVER_ID \
+  -e SECRET=SECRET \
+  -e WORKER_URL=https://example.com/update \
+  ghcr.io/<owner>/cfsm-agent:latest
+```
+
+配置通过环境变量传入，名称与安装参数一致，`entrypoint.sh` 会把它们写入 `/data/config.conf`。若 `/data` 已存在配置文件，则只覆盖本次显式设置的环境变量，保留其余字段（包括服务端动态下发的 `INTERFACE`、`COLLECT_INTERVAL`、`CONNECTION_MODE`、`CONFIG_MD5` 等），因此重启不会丢失下发配置。
+
+| 环境变量 | 说明 | 默认值 |
+| --- | --- | --- |
+| `SERVER_ID` | 服务器 ID，首次启动必填 | 无 |
+| `SECRET` | 服务器密钥，首次启动必填 | 无 |
+| `WORKER_URL` | Worker 上报地址，首次启动必填 | 无 |
+| `REPORT_INTERVAL` | 上报间隔，单位秒 | `60` |
+| `COLLECT_INTERVAL` | 采样间隔，单位秒 | `0` |
+| `CT_NODE` / `CU_NODE` / `CM_NODE` / `BD_NODE` | 电信/联通/移动/BGP 测试节点 | 空 |
+| `INTERFACE` | 指定统计网卡，多个用英文逗号分隔 | 自动汇总 |
+| `RESET_DAY` | 每月流量重置日 `1-31`，`0` 表示不重置 | `1` |
+| `CONNECTION_MODE` | 连接模式 `auto`/`http` | `auto` |
+| `PING_MODE` | Ping 模式 `tcp`/`icmp`；`icmp` 需追加 `--cap-add=NET_RAW` | `tcp` |
+| `UPDATE_PROXY` | 二进制下载的 GitHub 代理前缀 | 空 |
+| `CF_PROBE_DEBUG` | 设为 `1` 开启调试日志 | 空 |
+
+修改配置：`docker rm -f cf-probe` 后用新的 `-e` 参数重新 `docker run`（挂载卷会保留，只覆盖显式传入项）。
+
+**升级方式**：`docker pull` 新镜像后重建容器。容器内 `AUTO_UPDATE` 恒为 `0`，禁用二进制自更新——因为自替换的二进制只存在于容器可写层，重建容器或更新镜像时会被镜像内的版本重新覆盖，导致版本回退。请通过更新镜像而非容器内自更新来升级。
+
+**容器视角的监控边界**：
+
+- 开箱即准确：CPU、内存/Swap、负载、启动时间、操作系统/内核/CPU 信息、公网 IPv4/IPv6、Ping 探测（需容器可出网）。
+- 依赖 `--network=host`：网卡累计流量与网速、月流量、TCP/UDP 连接数。不加时只能看到容器自身 `eth0` 的少量流量，且容器重启后计数归零、`-interface` 指定宿主网卡会匹配为空。
+- 本期容器方式不覆盖（值会缺失或不准）：磁盘容量、磁盘 IO、进程数（受 mount/pid namespace 限制）、GPU（需驱动与设备透传进镜像）。这些指标在裸机安装方式下不受影响。
+
+### 本地构建镜像
+
+镜像不在容器内编译，需先产出静态二进制到 `dist/`：
+
+```bash
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
+  -ldflags "-s -w -X main.version=dev" -o dist/cf-probe-linux-amd64 ./cmd/cf-probe
+docker build -t cfsm-agent:local .
+```
+
+多架构构建：
+
+```bash
+docker buildx build --platform linux/amd64,linux/arm64 -t cfsm-agent:local --load .
+```
+
 ## 从源码构建
 
 需要 Go `1.24` 或更新版本。
