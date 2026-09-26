@@ -3,6 +3,7 @@
 package cfprobe
 
 import (
+	"fmt"
 	"os"
 	"runtime"
 	"sort"
@@ -302,8 +303,22 @@ func diskUsageLinux() (uint64, uint64, []DiskDeviceRef) {
 		}
 		device, hasDevice := linuxDiskDeviceRef(dev, mountPoint, deviceID)
 		entry := diskUsageEntry{total: size, used: used, device: device, hasDevice: hasDevice}
-		if existing, ok := devices[deviceID]; !ok || entry.total > existing.total {
-			devices[deviceID] = entry
+		// Dedup by the underlying filesystem id (statfs f_fsid) rather than the
+		// device name, so a single physical disk is counted once even when it
+		// appears twice inside a container: once as the overlay root ("/") and
+		// again as a bind-mounted volume (e.g. "/data"), which carry different
+		// device strings but share f_fsid. Fall back to the device string when
+		// f_fsid is unset so distinct real disks are never wrongly merged.
+		dedupKey := linuxMountFsidKey(&st)
+		if existing, ok := devices[dedupKey]; dedupKey == "" {
+			dedupKey = deviceID
+		} else if ok && distinctBlockDevices(deviceID, existing.device.Key) {
+			// Two different real block devices reporting the same f_fsid (e.g.
+			// cloned filesystems sharing a UUID): keep them counted separately.
+			dedupKey = deviceID
+		}
+		if existing, ok := devices[dedupKey]; !ok || diskEntryPreferred(entry, existing) {
+			devices[dedupKey] = entry
 		}
 	})
 	var total, used uint64
@@ -319,6 +334,37 @@ func diskUsageLinux() (uint64, uint64, []DiskDeviceRef) {
 		return diskDevices[i].Key < diskDevices[j].Key
 	})
 	return total, used, diskDevices
+}
+
+// linuxMountFsidKey builds a dedup key from the statfs f_fsid, which identifies
+// the underlying filesystem. Returns "" when f_fsid is unset, so callers fall
+// back to the device string instead of collapsing unrelated mounts.
+func linuxMountFsidKey(st *syscall.Statfs_t) string {
+	if st.Fsid.X__val[0] == 0 && st.Fsid.X__val[1] == 0 {
+		return ""
+	}
+	return fmt.Sprintf("fsid:%d:%d", int64(st.Fsid.X__val[0]), int64(st.Fsid.X__val[1]))
+}
+
+// distinctBlockDevices reports whether two mount sources are two *different*
+// real block devices (both under /dev/). Used to avoid ever merging two distinct
+// physical disks that happen to report the same f_fsid (e.g. cloned filesystems
+// sharing a UUID), while still allowing a non-/dev source such as an overlay
+// root to fold into its backing device.
+func distinctBlockDevices(a, b string) bool {
+	return strings.HasPrefix(a, "/dev/") && strings.HasPrefix(b, "/dev/") && a != b
+}
+
+// diskEntryPreferred reports whether entry should replace existing for the same
+// filesystem. Larger capacity wins (handles quotas); on a tie, prefer the entry
+// backed by a real block device (non-zero major) so the reported device list
+// keeps a usable major/minor for IO mapping rather than an anonymous overlay
+// device (major 0).
+func diskEntryPreferred(entry, existing diskUsageEntry) bool {
+	if entry.total != existing.total {
+		return entry.total > existing.total
+	}
+	return entry.device.Major != 0 && existing.device.Major == 0
 }
 
 func linuxDiskDeviceRef(dev, mountPoint, key string) (DiskDeviceRef, bool) {
