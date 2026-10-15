@@ -283,12 +283,12 @@ func printInstallSummary(paths Paths, opts InstallOptions) {
 	fmt.Printf("  Server ID   : %s\n", opts.ServerID)
 	fmt.Printf("  Secret      : ********\n")
 	fmt.Printf("  Worker URL  : %s\n", opts.WorkerURL)
-	fmt.Printf("  Report      : %d秒\n", opts.ReportInterval)
-	fmt.Printf("  Collect     : %d秒\n", opts.CollectInterval)
+	fmt.Printf("  Report      : %ds\n", opts.ReportInterval)
+	fmt.Printf("  Collect     : %ds\n", opts.CollectInterval)
 	fmt.Printf("  Connection  : %s\n", opts.ConnectionMode)
 	fmt.Printf("  Auto Update : %v\n", opts.AutoUpdate)
 	fmt.Printf("  Debug       : %v\n", opts.Debug)
-	fmt.Printf("  Interface   : %s\n", firstNonEmpty(opts.Interface, "自动汇总"))
+	fmt.Printf("  Interface   : %s\n", firstNonEmpty(opts.Interface, "auto"))
 	if opts.ResetDay == 0 {
 		fmt.Println("  Reset Day   : 不重置")
 	} else {
@@ -676,7 +676,9 @@ func writeWindowsService(paths Paths, debug bool) error {
 	if err := writeWindowsTaskWrapper(paths, debug); err != nil {
 		return err
 	}
-	_ = runCommand("schtasks", "/Delete", "/TN", paths.ServiceName, "/F")
+	// Quiet: on a first install the task does not exist yet and schtasks would
+	// print a localized "系统找不到指定的文件" error to stderr.
+	_ = runCommandQuiet("schtasks", "/Delete", "/TN", paths.ServiceName, "/F")
 	taskXML, cleanup, err := writeWindowsScheduledTaskXML(paths, debug)
 	if err != nil {
 		return fmt.Errorf("%w: %v", errWindowsService, err)

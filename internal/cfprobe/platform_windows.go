@@ -59,11 +59,24 @@ func defaultPaths() Paths {
 }
 
 func requireInstallPermission(_ Paths) error {
+	if !isElevated() {
+		return errors.New("Windows 安装需要管理员权限，请以管理员身份重新打开 PowerShell 后重试（右键 PowerShell 选择“以管理员身份运行”）")
+	}
 	return nil
 }
 
 func requireUninstallPermission(_ Paths) error {
+	if !isElevated() {
+		return errors.New("Windows 卸载需要管理员权限，请以管理员身份重新打开 PowerShell 后重试（右键 PowerShell 选择“以管理员身份运行”）")
+	}
 	return nil
+}
+
+// isElevated reports whether the current process token is elevated (UAC).
+// Group membership alone is not enough: under UAC a standard administrator
+// runs with a filtered token, so the token elevation flag must be checked.
+func isElevated() bool {
+	return xwindows.GetCurrentProcessToken().IsElevated()
 }
 
 func checkInstallConflicts(_ Paths) error {
@@ -152,7 +165,9 @@ func stopDetached(pidFile string) {
 }
 
 func stopWindowsScheduledTask(paths Paths) {
-	_ = runCommand("schtasks", "/End", "/TN", paths.ServiceName)
+	// Quiet: the task may not exist yet (first install), and schtasks would
+	// otherwise print a localized "系统找不到指定的文件" error to stderr.
+	_ = runCommandQuiet("schtasks", "/End", "/TN", paths.ServiceName)
 	stopWindowsProbeProcesses(paths)
 	waitWindowsProbeProcessesStopped(paths, 5*time.Second)
 }

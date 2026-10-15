@@ -1,9 +1,18 @@
 ﻿$ErrorActionPreference = "Stop"
 
+# Installing/uninstalling writes to C:\Program Files and registers a SYSTEM
+# scheduled task, both of which require an elevated (administrator) session.
+# Fail fast with a clear prompt instead of a raw "Access is denied" later.
+$cfPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+if (-not $cfPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    Write-Host "[ERROR] 安装或卸载 cf-probe 需要管理员权限。" -ForegroundColor Red
+    Write-Host "请右键点击 PowerShell，选择“以管理员身份运行”，然后重新执行本命令。" -ForegroundColor Yellow
+    exit 1
+}
+
 $Repo = "huilang-me/cfsm-agent"
 $GitHubProxy = ""
 $InstallVersion = "latest"
-$AutoUpdateEnabled = $false
 
 $needValueFor = ""
 foreach ($arg in $args) {
@@ -11,7 +20,6 @@ foreach ($arg in $args) {
         switch ($needValueFor) {
             "proxy" { $GitHubProxy = $arg }
             "version" { $InstallVersion = $arg }
-            "auto_update" { $AutoUpdateEnabled = ($arg -eq "1") }
         }
         $needValueFor = ""
         continue
@@ -21,10 +29,6 @@ foreach ($arg in $args) {
         "^--install-ghproxy$" { $needValueFor = "proxy"; continue }
         "^--install-version=(.+)$" { $InstallVersion = $Matches[1]; continue }
         "^--install-version$" { $needValueFor = "version"; continue }
-        "^-auto_update=(.+)$" { $AutoUpdateEnabled = ($Matches[1] -eq "1"); continue }
-        "^-auto-update=(.+)$" { $AutoUpdateEnabled = ($Matches[1] -eq "1"); continue }
-        "^-auto_update$" { $needValueFor = "auto_update"; continue }
-        "^-auto-update$" { $needValueFor = "auto_update"; continue }
     }
 }
 
@@ -77,10 +81,6 @@ Write-Host "  version : $InstallVersion"
 Write-Host "  target  : windows/$arch"
 Write-Host "  asset   : $asset"
 Write-Host "  url     : $url"
-if ($AutoUpdateEnabled) {
-    Write-Warning "Windows auto update downloads and executes cf-probe-update.exe. Antivirus software may block this behavior."
-    Write-Warning "If blocked, add these paths to the antivirus allowlist: C:\Program Files\cf-probe\cf-probe.exe, C:\ProgramData\cf-probe\cf-probe-update.exe, C:\ProgramData\cf-probe\cf-probe.cmd"
-}
 
 try {
     Invoke-WebRequest -Uri $url -OutFile $tmp -UseBasicParsing
