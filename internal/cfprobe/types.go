@@ -10,12 +10,15 @@ const (
 	configSchemaVersion         = "7"
 	defaultReportIntervalSec    = 60
 	defaultWSSReportIntervalSec = 2
-	minWSSReportIntervalSec     = 1
-	maxWSSReportIntervalSec     = 5
-	connectionModeAuto          = "auto"
-	connectionModeHTTP          = "http"
-	pingModeTCP                 = "tcp"
-	pingModeICMP                = "icmp"
+	// 单个上报窗口的硬上限：正常 60s/2s 窗口约 30 条，只有 REPORT_INTERVAL 远大于
+	// COLLECT_INTERVAL 时才会触顶；数值与服务端 UPDATE_MAX_BATCH_SAMPLES 保持一致。
+	maxBufferedMetricSamples = 300
+	minWSSReportIntervalSec  = 1
+	maxWSSReportIntervalSec  = 5
+	connectionModeAuto       = "auto"
+	connectionModeHTTP       = "http"
+	pingModeTCP              = "tcp"
+	pingModeICMP             = "icmp"
 )
 
 type Config struct {

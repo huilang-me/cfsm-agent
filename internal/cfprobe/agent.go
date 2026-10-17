@@ -50,6 +50,17 @@ type Agent struct {
 	lastConfigStateReportMD5 string
 	updateMu                 sync.Mutex
 	reporter                 *reportTransport
+	reportMu                 sync.Mutex
+	// reportFailures 是 WSS 与 POST 共用的连续失败计数：握手 401/403、WSS error 帧、
+	// POST 4xx/5xx、WS close 1008 都计入，任意一次成功（POST 2xx、非实时提示 ack、
+	// 或 WSS 握手通过）清零。
+	// 代价是两类通道互相干扰，例如 WSS 持续被拒而 POST 兜底偶发成功时计数会来回震荡，
+	// 熔断可能不触发；当前接受该误差，若后续需要区分通道再拆成独立计数器。
+	reportFailures    int
+	reportPausedUntil time.Time
+	reportBackoff     time.Duration
+	// lastReportFailureAt 用于失败计数衰减：超过 reportFailureDecay 没有新失败就重新计数。
+	lastReportFailureAt      time.Time
 	wake                     chan struct{}
 	remoteConfig             chan remoteConfigRequest
 	wssRuntimeMu             sync.Mutex
@@ -65,13 +76,28 @@ const (
 	metricsProbeWindowSampleCount = 6
 	metricsProbeSampleCount       = 1
 	configStateReportInterval     = time.Minute
-	agentWSSModeHeader            = "X-Agent-Wss-Mode"
-	agentWSSReasonHeader          = "X-Agent-Wss-Reason"
-	agentWSSModeActive            = "active"
-	agentWSSModeInactive          = "inactive"
-	agentWSSScheduleInactive      = "wss_schedule_inactive"
-	agentWSSScheduleEmpty         = "wss_schedule_empty"
+	// 连续服务端拒绝后开始退避；只影响上报与采样。WSS 建连不再受暂停限制，
+	// 配置下发与自动更新不受影响；HTTP 模式下的配置仍依赖 POST 2xx 响应体。
+	reportFailureThreshold = 3
+	reportBackoffMax       = 10 * time.Minute
+	// 超过该时长没有新的失败，连续失败计数归零，避免历史故障让后续单次失败直接跳到最高档。
+	reportFailureDecay       = 30 * time.Minute
+	agentWSSModeHeader       = "X-Agent-Wss-Mode"
+	agentWSSReasonHeader     = "X-Agent-Wss-Reason"
+	agentWSSModeActive       = "active"
+	agentWSSModeInactive     = "inactive"
+	agentWSSScheduleInactive = "wss_schedule_inactive"
+	agentWSSScheduleEmpty    = "wss_schedule_empty"
 )
+
+// 连续失败后的暂停时长：2m → 3m → 5m → 7m → 10m，之后保持 10m。
+var reportBackoffSteps = [...]time.Duration{
+	2 * time.Minute,
+	3 * time.Minute,
+	5 * time.Minute,
+	7 * time.Minute,
+	reportBackoffMax,
+}
 
 type timedProbeResult struct {
 	at     time.Time
@@ -341,6 +367,71 @@ func (a *Agent) setConfig(cfg Config) {
 	a.cfgMu.Unlock()
 }
 
+// reportPauseRemaining 返回距离恢复上报的剩余时间，<=0 表示未暂停。
+func (a *Agent) reportPauseRemaining(now time.Time) time.Duration {
+	if a == nil {
+		return 0
+	}
+	a.reportMu.Lock()
+	defer a.reportMu.Unlock()
+	return a.reportPausedUntil.Sub(now)
+}
+
+// noteReportSuccess 清零连续失败并解除熔断。恢复本身不打日志：进入暂停时已有 info，
+// 且每次 ack 都打会刷屏；排障时看 "report paused" 之后再无该日志即表示已恢复。
+func (a *Agent) noteReportSuccess() {
+	if a == nil {
+		return
+	}
+	a.reportMu.Lock()
+	a.reportFailures = 0
+	a.reportPausedUntil = time.Time{}
+	a.reportBackoff = 0
+	a.lastReportFailureAt = time.Time{}
+	a.reportMu.Unlock()
+}
+
+func reportBackoffForFailures(failures int) time.Duration {
+	if failures < reportFailureThreshold {
+		return 0
+	}
+	index := failures - reportFailureThreshold
+	if index >= len(reportBackoffSteps) {
+		index = len(reportBackoffSteps) - 1
+	}
+	return reportBackoffSteps[index]
+}
+
+// noteReportFailure 记录一次服务端拒绝。code 是调用方的原始码：HTTP 状态码，
+// 或 WSS close code（1008），因此日志里的 status 字段不总是 HTTP 语义。
+// 时间基准用 time.Now() 而非 tick 的 now，误差在秒级以内，不影响退避档位。
+func (a *Agent) noteReportFailure(statusCode int) {
+	if a == nil {
+		return
+	}
+	a.reportMu.Lock()
+	now := time.Now()
+	if !a.lastReportFailureAt.IsZero() && now.Sub(a.lastReportFailureAt) >= reportFailureDecay {
+		a.reportFailures = 0
+		a.reportBackoff = 0
+	}
+	a.lastReportFailureAt = now
+	a.reportFailures++
+	failures := a.reportFailures
+	previousBackoff := a.reportBackoff
+	var delay time.Duration
+	if failures >= reportFailureThreshold {
+		a.reportBackoff = reportBackoffForFailures(failures)
+		a.reportPausedUntil = now.Add(a.reportBackoff)
+		delay = a.reportBackoff
+	}
+	a.reportMu.Unlock()
+	// 只在首次触发或退避档位变化时记录，避免达到上限后反复刷日志
+	if delay > 0 && delay != previousBackoff {
+		a.log.info("report paused failures=%d status=%d delay=%s", failures, statusCode, delay)
+	}
+}
+
 func (a *Agent) disableWSSRuntime(reason string) {
 	reason = strings.TrimSpace(reason)
 	if reason == "" {
@@ -402,6 +493,14 @@ func (a *Agent) handleWSSRuntimeHeaders(headers http.Header) {
 
 func (a *Agent) tick() {
 	now := time.Now()
+	if a.reportPauseRemaining(now) > 0 {
+		// 熔断期间停止采样与序列化，这是 CPU 的主要节省点。
+		// 缓冲里剩下的样本属于熔断前的窗口，直接丢弃：恢复后补发会带旧时间戳，
+		// 服务端按样本时间分桶时会出现错位数据。samples 只由本 goroutine 写入，
+		// 在这里清理不会与 transport 的失败计数产生竞争。
+		a.samples = nil
+		return
+	}
 	cfg := a.configSnapshot()
 	reportInterval := time.Duration(cfg.ReportInterval) * time.Second
 	if reportInterval < time.Second {
@@ -461,23 +560,40 @@ func (a *Agent) tick() {
 	}
 	m := a.buildMetrics(cfg, cpu, netNow, rxSpeed, txSpeed, a.monthlyRX, a.monthlyTX, a.diskIO)
 	if shouldSample {
-		a.samples = append(a.samples, metricSample{
-			at:      now,
-			metrics: sampleMetricsToMap(m),
-		})
-		a.lastSample = now
+		a.appendSample(now, m)
 	}
 	if shouldWSSReport || shouldPostReport {
-		if result := a.sendReport(cfg, m, shouldWSSReport, shouldPostReport, reportInterval); result.ok {
-			if result.viaWSS {
-				a.lastReport = now
-				a.lastPost = now
-			} else if result.viaPOST {
-				a.lastPost = now
-			}
-			a.samples = nil
+		a.applyReportResult(a.sendReport(cfg, m, shouldWSSReport, shouldPostReport, reportInterval), now)
+	}
+}
+
+// applyReportResult 更新上报时间，并在每次上报尝试后清空样本窗口：
+// 样本只代表当前上报间隔内的数据，失败也不留给下一次。
+// 这意味着服务端拒绝期间该窗口的采样点直接丢弃，不会在下次成功上报时补发；
+// 这是刻意取舍：补发会拖长 payload 且时间戳已经过期，服务端图表宁可有缺口。
+func (a *Agent) applyReportResult(result reportSendResult, now time.Time) {
+	if result.ok {
+		if result.viaWSS {
+			a.lastReport = now
+			a.lastPost = now
+		} else if result.viaPOST {
+			a.lastPost = now
 		}
 	}
+	a.samples = nil
+}
+
+func (a *Agent) appendSample(now time.Time, m Metrics) {
+	a.samples = append(a.samples, metricSample{
+		at:      now,
+		metrics: sampleMetricsToMap(m),
+	})
+	if len(a.samples) > maxBufferedMetricSamples {
+		// 单个上报窗口的硬上限：REPORT_INTERVAL 远大于 COLLECT_INTERVAL 时也不会撑大 body。
+		copy(a.samples, a.samples[len(a.samples)-maxBufferedMetricSamples:])
+		a.samples = a.samples[:maxBufferedMetricSamples]
+	}
+	a.lastSample = now
 }
 
 func (a *Agent) refreshRealtimeBasicStats() {
@@ -601,6 +717,7 @@ func (a *Agent) sendReport(cfg Config, m Metrics, preferWSS, allowPOST bool, rep
 	if preferWSS && a.reporter != nil {
 		a.log.debugf("WSS report attempt url=%s payload_bytes=%d samples=%d", a.reporter.url(), len(body), sampleCount)
 		if a.reporter.send(body) {
+			// 写入成功不代表服务端接受，成功计数由 ack 帧触发。
 			return reportSendResult{ok: true, viaWSS: true}
 		}
 		wssFailed = true
@@ -621,8 +738,14 @@ func (a *Agent) sendReport(cfg Config, m Metrics, preferWSS, allowPOST bool, rep
 		a.reporter.delayProtocol(fmt.Sprintf("POST fallback http=%d", statusCode))
 	}
 	if err != nil || statusCode < 200 || statusCode >= 300 {
+		// 只把 4xx/5xx 视为服务端拒绝。网络错误（statusCode=0）和 3xx 不计入连续失败，
+		// 前者由 transport 自己的重连退避处理，后者理论上被 http client 跟随。
+		if statusCode >= 400 {
+			a.noteReportFailure(statusCode)
+		}
 		return reportSendResult{}
 	}
+	a.noteReportSuccess()
 	return reportSendResult{ok: true, viaPOST: true}
 }
 
