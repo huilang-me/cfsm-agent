@@ -61,9 +61,9 @@ type Agent struct {
 	lastConfigRejectKey string
 	// 自动发现拿到但没能写入配置文件的 id，后续上报会重试落盘。
 	pendingPersistID string
-	updateMu                 sync.Mutex
-	reporter                 *reportTransport
-	reportMu                 sync.Mutex
+	updateMu         sync.Mutex
+	reporter         *reportTransport
+	reportMu         sync.Mutex
 	// reportFailures 是 WSS 与 POST 共用的连续失败计数：握手 401/403、WSS error 帧、
 	// POST 4xx/5xx、WS close 1008 都计入，任意一次成功（POST 2xx、非实时提示 ack、
 	// 或 WSS 握手通过）清零。
@@ -108,6 +108,9 @@ const (
 	agentAutoDiscoveryCreated     = "created"
 	agentAutoDiscoveryReused      = "reused"
 	agentAutoDiscoveryFailed      = "failed"
+	// agentAutoDiscoveryDisabled 是 Agent 本地判定的中止原因：未绑定 id 时收到
+	// 不带自动发现标记的 404，说明服务端没有开启自动发现（或版本过旧），服务端不会返回这个值。
+	agentAutoDiscoveryDisabled = "disabled"
 )
 
 // ErrAutoDiscoveryFailed 表示未绑定 server id 且自动建号无法完成（失败或重名），进程应直接退出。
@@ -573,7 +576,8 @@ func (a *Agent) applyAutoDiscoveryHeaders(headers http.Header) {
 		a.reporter.resetReportInterval()
 		a.wakeTick()
 	case agentAutoDiscoveryReused:
-		a.abortAutoDiscovery(agentAutoDiscoveryReused, strings.TrimSpace(headers.Get(agentAutoDiscoveryServerIDKey)))
+		// 服务端出于防串号不会回传同名服务器的 id，这里不能引用它。
+		a.abortAutoDiscovery(agentAutoDiscoveryReused, "")
 	case agentAutoDiscoveryFailed:
 		a.abortAutoDiscovery(agentAutoDiscoveryFailed, firstNonEmpty(code, "unknown"))
 	}
@@ -584,11 +588,26 @@ func (a *Agent) abortAutoDiscovery(kind, detail string) {
 	if a.discoveryFailed.Swap(true) {
 		return
 	}
-	if kind == agentAutoDiscoveryReused {
-		a.log.warnf("自动发现中止：已存在同名服务器 id=%s，为避免串号不复用。cf-probe 将退出，请改用 install -id=%s，或更换 -name 后重试", detail, detail)
-		return
+	switch kind {
+	case agentAutoDiscoveryReused:
+		a.log.warnf("自动发现中止：服务端已存在同名服务器，请更换 -name 后重试，或获取该服务器 ID 后改用 install -id 安装")
+	case agentAutoDiscoveryDisabled:
+		a.log.warnf("服务端未开启自动发现：请在面板「设置 → 站点设置」中开启自动发现")
+	default:
+		a.log.warnf("自动发现失败：code=%s，不再重试。%s", detail, autoDiscoveryFailureHint(detail))
 	}
-	a.log.warnf("自动发现失败：code=%s，不再重试，cf-probe 将退出。请确认服务端已开启自动发现，或改用 install -id 安装", detail)
+}
+
+// autoDiscoveryFailureHint 把服务端返回的失败码翻译成可执行建议。
+func autoDiscoveryFailureHint(code string) string {
+	switch code {
+	case "no_name":
+		return "服务端拿不到服务器名称，请改用 install -name=NAME 重试，或使用面板生成的 -id 安装"
+	case "db_error":
+		return "服务端建号时数据库出错，请稍后重试；持续失败请查看 Worker 日志，或改用 install -id 安装"
+	default:
+		return "请查看 Worker 日志排查，或改用 install -id 安装"
+	}
 }
 
 func (a *Agent) tick() {
@@ -829,7 +848,7 @@ func (a *Agent) report(m Metrics) {
 	reportAt := time.Now()
 	body, sampleCount, err := a.buildReportBodyForConfig(cfg, m, reportAt)
 	if err != nil {
-		a.log.warnf("marshal payload failed: %v", err)
+		a.log.warnfOnce("marshal", "marshal payload failed: %v", err)
 		return
 	}
 	a.logMetricsSummary(m)
@@ -840,7 +859,7 @@ func (a *Agent) sendReport(cfg Config, m Metrics, preferWSS, allowPOST bool, rep
 	reportAt := time.Now()
 	body, sampleCount, err := a.buildReportBodyForConfig(cfg, m, reportAt)
 	if err != nil {
-		a.log.warnf("marshal payload failed: %v", err)
+		a.log.warnfOnce("marshal", "marshal payload failed: %v", err)
 		return reportSendResult{}
 	}
 	a.logMetricsSummary(m)
@@ -904,8 +923,11 @@ func (a *Agent) buildReportBodyForConfig(cfg Config, m Metrics, reportAt time.Ti
 		"report_interval":  cfg.ReportInterval,
 	}
 	// 仅在自动发现阶段有意义：服务端建号时用它作为服务器名称。
-	if name := strings.TrimSpace(cfg.Name); name != "" {
-		payload["name"] = name
+	// 绑定 id 之后不再发送，避免每次上报都带一个无用的字段。
+	if cfg.ServerID == "" {
+		if name := strings.TrimSpace(cfg.Name); name != "" {
+			payload["name"] = name
+		}
 	}
 	if a.shouldReportConfigState(firstNonEmpty(cfg.ConfigMD5, "none"), reportAt) {
 		payload["config_schema"] = configSchemaVersion
@@ -945,7 +967,7 @@ func (a *Agent) postReportBody(cfg Config, body []byte, sampleCount int, fallbac
 	a.log.debugf("%s attempt url=%s payload_bytes=%d samples=%d", label, cfg.WorkerURL, len(body), sampleCount)
 	req, err := http.NewRequest(http.MethodPost, cfg.WorkerURL, bytes.NewReader(body))
 	if err != nil {
-		a.log.warnf("create %s request failed: %v", label, err)
+		a.log.warnfOnce("create-request:"+label, "create %s request failed: %v", label, err)
 		return 0, err
 	}
 	req.Header.Set("Content-Type", "application/json")
@@ -1001,6 +1023,14 @@ func (a *Agent) handleTimedReportResponse(statusCode int, respBody []byte, heade
 	// 服务端建号后仍可能因载荷校验失败返回 4xx，此时同样要绑定 id，否则下次上报会再建一台），
 	// 因此必须在状态判断之前处理；也必须在 applyRemoteConfig 之前绑定 id。
 	a.applyAutoDiscoveryHeaders(headers)
+	// 未绑定 id 且收到不带自动发现标记的 404：服务端没开自动发现（或版本过旧）。
+	// 这种情况下每次上报都必然是 404，直接提示后退出，避免静默空转。
+	if statusCode == http.StatusNotFound &&
+		strings.TrimSpace(headers.Get(agentAutoDiscoveryHeader)) == "" &&
+		a.configSnapshot().ServerID == "" {
+		a.abortAutoDiscovery(agentAutoDiscoveryDisabled, "")
+		return
+	}
 	if statusCode < 200 || statusCode >= 300 {
 		return
 	}

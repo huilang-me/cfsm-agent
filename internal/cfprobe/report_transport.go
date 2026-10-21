@@ -494,7 +494,7 @@ func (r *reportTransport) applyConfigBody(body []byte, headers http.Header) {
 		return
 	}
 	if err := r.agent.applyWSSRemoteConfig(body, headers); err != nil {
-		r.agent.log.warnf("WSS config rejected: %v", err)
+		r.agent.log.warnfOnce("wss-config:"+err.Error(), "WSS config rejected: %v", err)
 		return
 	}
 	r.agent.log.info("WSS config processed bytes=%d", len(body))

@@ -50,7 +50,7 @@ Invoke-WebRequest -Uri "https://raw.githubusercontent.com/huilang-me/cfsm-agent/
 PowerShell -ExecutionPolicy Bypass -File $script install -secret=SECRET -url=WORKER_URL -name=hk-1
 ```
 
-不传 `-id` 时，Agent 启动后只走 POST 上报：首次上报由服务端创建服务器并返回 ID，Agent 立即写入配置文件（`SERVER_ID`），随后按服务端下发的 `connection_mode` 决定是否切换到 WSS。建号成功的日志为「自动发现已创建服务器」，约 2 分钟后面板才会显示该服务器。若写入配置失败，ID 仍会在本次运行内生效，Agent 会在后续上报中持续重试写入；若始终写不进去，重启后会重新走建号流程——同名会中止退出，名称变化（例如公网 IP 改变）则会建出一台重复服务器，请及时修复配置目录权限。服务端已存在同名服务器（`reused`）或建号失败（`failed`）时，Agent 只输出一条提示便直接退出：既不复用同名服务器、也不重试，磁盘上不会留下任何标记文件；服务管理器的重启策略已改为仅在异常退出时重启，因此不会被自动拉起（`systemctl status cf-probe` 显示为已停止）。修复后重新执行 `install` 并传入 `-id` 即可恢复。
+不传 `-id` 时，Agent 启动后只走 POST 上报：首次上报由服务端创建服务器并返回 ID，Agent 立即写入配置文件（`SERVER_ID`），随后按服务端下发的 `connection_mode` 决定是否切换到 WSS。建号成功的日志为「自动发现已创建服务器」，约 2 分钟后面板才会显示该服务器。若写入配置失败，ID 仍会在本次运行内生效，Agent 会在后续上报中持续重试写入；若始终写不进去，重启后会重新走建号流程——同名会中止退出，名称变化（例如公网 IP 改变）则会建出一台重复服务器，请及时修复配置目录权限。服务端已存在同名服务器（`reused`）、建号失败（`failed`），或服务端未开启自动发现（空 `id` 上报只收到普通 404）时，Agent 只输出一条提示便直接退出：既不复用同名服务器、也不重试，磁盘上不会留下任何标记文件；服务管理器的重启策略已改为仅在异常退出时重启，因此不会被自动拉起（`systemctl status cf-probe` 显示为已停止）。修复后重新执行 `install` 并传入 `-id` 即可恢复。
 
 ## Windows 安装
 

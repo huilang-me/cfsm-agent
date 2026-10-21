@@ -2,9 +2,11 @@ package cfprobe
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -319,5 +321,108 @@ func TestAbortedDiscoveryLeavesNoFiles(t *testing.T) {
 			names = append(names, entry.Name())
 		}
 		t.Fatalf("config dir is not clean after aborted discovery: %v", names)
+	}
+}
+
+// 服务端未开启自动发现时，空 id 的上报只会拿到一个不带任何标记的 404。
+// 这种情况必须提示「请开启自动发现」后退出，不能静默地每 60 秒空转一次。
+func TestUnboundAgentAbortsOnPlain404(t *testing.T) {
+	agent := newDiscoveryTestAgent(t, Config{
+		Secret:         "secret",
+		WorkerURL:      "https://example.com",
+		ConnectionMode: connectionModeAuto,
+		ReportInterval: 60,
+	})
+
+	agent.handleTimedReportResponse(
+		http.StatusNotFound,
+		[]byte("Not Found"),
+		http.Header{},
+		time.Now(),
+		time.Now(),
+	)
+
+	if !agent.discoveryAbandoned() {
+		t.Fatal("discoveryAbandoned() = false: a plain 404 must stop an unbound agent")
+	}
+}
+
+// 已绑定 id 的服务器被删除后仍要保持原来的 404 语义，不能被当成自动发现失败而退出。
+func TestBoundAgentKeepsRunningOnPlain404(t *testing.T) {
+	agent := newDiscoveryTestAgent(t, Config{
+		ServerID:       "srv-test",
+		Secret:         "secret",
+		WorkerURL:      "https://example.com",
+		ConnectionMode: connectionModeAuto,
+		ReportInterval: 60,
+	})
+
+	agent.handleTimedReportResponse(
+		http.StatusNotFound,
+		[]byte("Not Found"),
+		http.Header{},
+		time.Now(),
+		time.Now(),
+	)
+
+	if agent.discoveryAbandoned() {
+		t.Fatal("discoveryAbandoned() = true for a bound server")
+	}
+}
+
+// 失败码到建议的映射：能收到 failed 响应头说明自动发现已经开启，
+// 所以任何一条建议都不能再让用户去「开启自动发现」。
+func TestAutoDiscoveryFailureHint(t *testing.T) {
+	cases := []struct {
+		code string
+		want string
+	}{
+		{"no_name", "-name"},
+		{"db_error", "数据库"},
+		{"something_new", "Worker 日志"},
+	}
+
+	for _, tc := range cases {
+		hint := autoDiscoveryFailureHint(tc.code)
+		if strings.Contains(hint, "开启自动发现") {
+			t.Fatalf("autoDiscoveryFailureHint(%q) = %q, must not suggest enabling auto discovery", tc.code, hint)
+		}
+		if !strings.Contains(hint, tc.want) {
+			t.Fatalf("autoDiscoveryFailureHint(%q) = %q, want it to contain %q", tc.code, hint, tc.want)
+		}
+	}
+}
+
+// name 只在未绑定 id 时随上报发送：绑定后服务端不再需要它。
+func TestReportBodyCarriesNameOnlyBeforeBinding(t *testing.T) {
+	agent := newDiscoveryTestAgent(t, Config{
+		Secret:         "secret",
+		WorkerURL:      "https://example.com",
+		Name:           "hk-1",
+		ConnectionMode: connectionModeAuto,
+		ReportInterval: 60,
+	})
+
+	payload := func(cfg Config) map[string]any {
+		t.Helper()
+		body, _, err := agent.buildReportBodyForConfig(cfg, Metrics{}, time.Now())
+		if err != nil {
+			t.Fatalf("buildReportBodyForConfig() error: %v", err)
+		}
+		var decoded map[string]any
+		if err := json.Unmarshal(body, &decoded); err != nil {
+			t.Fatalf("Unmarshal() error: %v", err)
+		}
+		return decoded
+	}
+
+	if got := payload(agent.configSnapshot())["name"]; got != "hk-1" {
+		t.Fatalf("name = %v before binding, want hk-1", got)
+	}
+
+	bound := agent.configSnapshot()
+	bound.ServerID = "srv-bound"
+	if _, ok := payload(bound)["name"]; ok {
+		t.Fatal("name must not be sent after the server id is bound")
 	}
 }
