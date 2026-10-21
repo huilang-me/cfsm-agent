@@ -41,9 +41,9 @@ func Install(opts InstallOptions, version string) error {
 		flagConfig := opts.Config
 		opts.Config = existing
 		mergeExplicitInstallConfig(&opts.Config, flagConfig, opts.Explicit)
-	} else if opts.ServerID == "" || opts.Secret == "" || opts.WorkerURL == "" {
+	} else if opts.Secret == "" || opts.WorkerURL == "" {
 		printUsage(os.Stderr)
-		return errors.New("运行所需的 -id/-secret/-url 参数不完整")
+		return errors.New("运行所需的 -secret/-url 参数不完整")
 	}
 	if !usingExistingConfig || opts.ConfigMD5 == "" {
 		opts.ConfigMD5 = "none"
@@ -99,6 +99,8 @@ func mergeExplicitInstallConfig(dst *Config, src Config, explicit map[string]boo
 		switch name {
 		case "id":
 			dst.ServerID = src.ServerID
+		case "name":
+			dst.Name = src.Name
 		case "secret":
 			dst.Secret = src.Secret
 		case "url":
@@ -280,7 +282,15 @@ func printInstallSummary(paths Paths, opts InstallOptions) {
 	fmt.Printf("  Service     : %s\n", paths.ServiceName)
 	fmt.Printf("  Binary      : %s\n", paths.BinaryFile)
 	fmt.Printf("  Config      : %s\n", paths.ConfigFile)
-	fmt.Printf("  Server ID   : %s\n", opts.ServerID)
+	if opts.ServerID == "" {
+		fmt.Printf("  Server ID   : 自动发现（首次上报后绑定）\n")
+		fmt.Printf("  自动发现    : 建号失败或遇到同名服务器时，服务输出原因后退出，不会自动重启\n")
+	} else {
+		fmt.Printf("  Server ID   : %s\n", opts.ServerID)
+	}
+	if opts.Name != "" {
+		fmt.Printf("  Server Name : %s\n", opts.Name)
+	}
 	fmt.Printf("  Secret      : ********\n")
 	fmt.Printf("  Worker URL  : %s\n", opts.WorkerURL)
 	fmt.Printf("  Report      : %ds\n", opts.ReportInterval)
@@ -500,7 +510,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 ExecStart=%s run -debug=%s
-Restart=always
+Restart=on-failure
 RestartSec=5
 User=root
 Group=root
@@ -530,7 +540,7 @@ After=default.target
 [Service]
 Type=simple
 ExecStart=%s run -config=%s -debug=%s
-Restart=always
+Restart=on-failure
 RestartSec=5
 StandardOutput=journal
 StandardError=journal
@@ -613,7 +623,10 @@ func writeLaunchdService(paths Paths, debug bool) error {
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
-    <true/>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
 %s    <key>StandardOutPath</key>
     <string>%s</string>
     <key>StandardErrorPath</key>

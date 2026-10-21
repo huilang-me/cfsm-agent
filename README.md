@@ -26,6 +26,32 @@ wget -O- https://raw.githubusercontent.com/huilang-me/cfsm-agent/main/install.sh
 
 支持 `systemd --user` 的 Linux 可使用非 root 安装；执行安装时会使用当前用户，不会新建用户；二进制、配置和流量文件会写入 `~/.cf-probe/`，自启动使用 `systemd --user`。Synology DSM、OpenWrt、Alpine/OpenRC 以及其他不支持 `systemd --user` 的系统请使用 root 权限安装。部分 Linux 系统从旧的 root Go 版切换到非 root 安装时，需要先在 root 下卸载旧版 agent.
 
+## 自动发现安装（不传 `-id`）
+
+服务端在「设置 → 站点设置」开启**自动发现**后，安装时可以省略 `-id`，由服务端在首次上报时自动建号。
+
+Linux、OpenWrt、Synology DSM、FreeBSD、macOS：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/huilang-me/cfsm-agent/main/install.sh | sh -s -- install -secret=SECRET -url=WORKER_URL
+```
+
+指定服务器名称（不传则使用本机公网 IPv4，没有 IPv4 时使用 IPv6）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/huilang-me/cfsm-agent/main/install.sh | sh -s -- install -secret=SECRET -url=WORKER_URL -name=hk-1
+```
+
+Windows（管理员 PowerShell）：
+
+```powershell
+$script = "$env:TEMP\install-cf-probe.ps1"
+Invoke-WebRequest -Uri "https://raw.githubusercontent.com/huilang-me/cfsm-agent/main/install.ps1" -OutFile $script -UseBasicParsing
+PowerShell -ExecutionPolicy Bypass -File $script install -secret=SECRET -url=WORKER_URL -name=hk-1
+```
+
+不传 `-id` 时，Agent 启动后只走 POST 上报：首次上报由服务端创建服务器并返回 ID，Agent 立即写入配置文件（`SERVER_ID`），随后按服务端下发的 `connection_mode` 决定是否切换到 WSS。若落盘失败，ID 仍会在本次运行内生效，避免重复建号；修复配置目录权限后重启即可持久化。服务端已存在同名服务器（`reused`）或建号失败（`failed`）时，Agent 只输出一条提示便直接退出：既不复用同名服务器、也不重试，磁盘上不会留下任何标记文件；服务管理器的重启策略已改为仅在异常退出时重启，因此不会被自动拉起（`systemctl status cf-probe` 显示为已停止）。修复后重新执行 `install` 并传入 `-id` 即可恢复。
+
 ## Windows 安装
 
 请使用管理员权限打开 PowerShell，然后执行：
@@ -56,7 +82,8 @@ curl -fsSL https://raw.githubusercontent.com/huilang-me/cfsm-agent/main/install.
 
 | 参数 | 说明 | 默认值 |
 | --- | --- | --- |
-| `-id=SERVER_ID` | 服务器 ID，首次安装必填 | 无 |
+| `-id=SERVER_ID` | 服务器 ID，首次安装必填；服务端开启自动发现时可省略 | 无 |
+| `-name=NAME` | 自动建号时的服务器名称，未传则使用本机公网 IPv4（无 IPv4 时用 IPv6） | 公网 IP |
 | `-secret=SECRET` | 服务器密钥，首次安装必填 | 无 |
 | `-url=WORKER_URL` | Worker 上报地址，首次安装必填 | 无 |
 | `-interval=N` | 上报间隔，单位秒 | `60` |
@@ -75,7 +102,7 @@ curl -fsSL https://raw.githubusercontent.com/huilang-me/cfsm-agent/main/install.
 | `-debug=0\|1` | 是否开启调试日志 | `0` |
 | `-no_start` | 安装后不立即启动服务 | 不启用 |
 
-再次执行 `install` 时，如果本机已有配置文件，程序会以已有配置为基础，只覆盖本次显式传入的参数，未传入的参数保留旧值（例如只传 `-auto_update=1` 就只修改自动更新开关）。首次安装（本机无已有配置）时 `-id`、`-secret`、`-url` 仍为必填。
+再次执行 `install` 时，如果本机已有配置文件，程序会以已有配置为基础，只覆盖本次显式传入的参数，未传入的参数保留旧值（例如只传 `-auto_update=1` 就只修改自动更新开关）。首次安装（本机无已有配置）时 `-secret`、`-url` 必填；`-id` 在服务端开启自动发现时可省略，具体见[自动发现安装](#自动发现安装不传--id)。
 
 自动更新默认关闭。安装时传入 `-auto_update=1` 后，Agent 启动时会检查 GitHub release，之后每 6 小时检查一次；稳定版按版本号更新，`Snapshot-` 版本会跟随最新可用 Snapshot prerelease。自动更新只由本地 `AUTO_UPDATE` 配置控制，不依赖面板返回 `update=1`。如果安装时配置了 `--install-ghproxy`，代理会写入本地配置并用于后续自动更新；该本地字段不参与远端配置 MD5 对比。自动更新的检查结果、调度结果和失败原因始终以 info 级日志输出，无需开启 debug；系统级 nohup 环境下安装过程的输出会追加到 `/var/log/cf-probe.log`，systemd 环境可通过 `journalctl -u 'cf-probe-auto-update-*'` 查看。
 

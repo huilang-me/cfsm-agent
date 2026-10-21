@@ -88,7 +88,7 @@ func TestWSSEffectiveCollectIntervalUsesNormalizedConfig(t *testing.T) {
 }
 
 func TestWSSReportIntervalDefaultsToTwoSecondsBeforeAck(t *testing.T) {
-	agent := Agent{cfg: Config{ReportInterval: 60}, reporter: &reportTransport{}}
+	agent := Agent{cfg: Config{ServerID: "srv-test", ReportInterval: 60}, reporter: &reportTransport{}}
 	if got := agent.currentWSSReportInterval(); got != 2*time.Second {
 		t.Fatalf("currentWSSReportInterval() = %s, want 2s", got)
 	}
@@ -489,6 +489,7 @@ func TestReportTransportSetConnIfActiveRejectsStoppedTransport(t *testing.T) {
 func TestAgentWSSRuntimeHeadersTemporarilyDisableAndRestoreWSS(t *testing.T) {
 	agent := Agent{
 		cfg: Config{
+			ServerID:        "srv-test",
 			ReportInterval:  60,
 			ConnectionMode:  connectionModeAuto,
 			CollectInterval: 2,
@@ -574,7 +575,7 @@ func TestWSSScheduleInactiveHandshakeIsSoftReject(t *testing.T) {
 
 func TestAgentWSSDisabledHeaderDisablesWSS(t *testing.T) {
 	agent := Agent{
-		cfg: Config{ConnectionMode: connectionModeAuto},
+		cfg: Config{ServerID: "srv-test", ConnectionMode: connectionModeAuto},
 		log: newLogger(false),
 	}
 	agent.handleWSSRuntimeHeaders(http.Header{
@@ -632,7 +633,7 @@ func TestWSSDisabledHandshakeIsSoftReject(t *testing.T) {
 
 func TestReportTransportUsesServerSuggestedWSSReportInterval(t *testing.T) {
 	agent := Agent{
-		cfg: Config{ReportInterval: 60},
+		cfg: Config{ServerID: "srv-test", ReportInterval: 60},
 		log: newLogger(false),
 	}
 	transport := &reportTransport{agent: &agent}

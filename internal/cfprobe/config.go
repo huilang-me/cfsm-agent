@@ -125,6 +125,7 @@ func readConfig(path string) (Config, error) {
 	cfg.ServerID = values["SERVER_ID"]
 	cfg.Secret = values["SECRET"]
 	cfg.WorkerURL = values["WORKER_URL"]
+	cfg.Name = values["NAME"]
 	cfg.CollectInterval = parseIntDefault(values["COLLECT_INTERVAL"], cfg.CollectInterval)
 	cfg.ReportInterval = parseIntDefault(values["REPORT_INTERVAL"], cfg.ReportInterval)
 	cfg.CTNode = values["CT_NODE"]
@@ -161,6 +162,7 @@ func writeConfig(path string, cfg Config) error {
 	writeKV("SERVER_ID", cfg.ServerID)
 	writeKV("SECRET", cfg.Secret)
 	writeKV("WORKER_URL", cfg.WorkerURL)
+	writeKV("NAME", cfg.Name)
 	writeKV("COLLECT_INTERVAL", strconv.Itoa(cfg.CollectInterval))
 	writeKV("REPORT_INTERVAL", strconv.Itoa(cfg.ReportInterval))
 	writeKV("CT_NODE", cfg.CTNode)

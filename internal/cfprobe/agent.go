@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -26,6 +27,9 @@ type Agent struct {
 	log     logger
 	version string
 	ctx     context.Context
+
+	// 自动建号失败后置位：本次运行不再重试建号，也不再上报（空 id 的上报必然 404）。
+	discoveryFailed atomic.Bool
 
 	mu         sync.RWMutex
 	probes     ProbeSnapshot
@@ -88,7 +92,17 @@ const (
 	agentWSSModeInactive     = "inactive"
 	agentWSSScheduleInactive = "wss_schedule_inactive"
 	agentWSSScheduleEmpty    = "wss_schedule_empty"
+
+	// 服务端自动建号结果：created | reused | failed[:code]
+	agentAutoDiscoveryHeader      = "X-CFSM-Auto-Discovery"
+	agentAutoDiscoveryServerIDKey = "X-CFSM-Server-Id"
+	agentAutoDiscoveryCreated     = "created"
+	agentAutoDiscoveryReused      = "reused"
+	agentAutoDiscoveryFailed      = "failed"
 )
+
+// ErrAutoDiscoveryFailed 表示未绑定 server id 且自动建号无法完成（失败或重名），进程应直接退出。
+var ErrAutoDiscoveryFailed = errors.New("自动建号已中止，cf-probe 退出")
 
 // 连续失败后的暂停时长：2m → 3m → 5m → 7m → 10m，之后保持 10m。
 var reportBackoffSteps = [...]time.Duration{
@@ -193,8 +207,8 @@ func Run(configFile string, debug bool, version string) error {
 	if err != nil {
 		return fmt.Errorf("读取配置失败 %s: %w", paths.ConfigFile, err)
 	}
-	if cfg.ServerID == "" || cfg.Secret == "" || cfg.WorkerURL == "" {
-		return errors.New("配置缺失: SERVER_ID/SECRET/WORKER_URL 不能为空")
+	if cfg.Secret == "" || cfg.WorkerURL == "" {
+		return errors.New("配置缺失: SECRET/WORKER_URL 不能为空")
 	}
 	normalizeConfigIntervals(&cfg)
 
@@ -217,12 +231,17 @@ func Run(configFile string, debug bool, version string) error {
 	a.basicAt = time.Now()
 
 	a.log.info("CF-Server-Monitor Go Probe started version=%s platform=%s config=%s", version, platformName(), paths.ConfigFile)
+	if cfg.ServerID == "" {
+		a.log.info("未绑定 SERVER_ID：先通过 POST 自动发现，绑定成功后按服务端下发的 connection_mode 切换")
+	}
 	a.log.debugf("config id=%s url=%s report_interval=%ds collect_interval=%ds reset_day=%d connection_mode=%s ping_mode=%s interface=%s auto_update=%v",
 		cfg.ServerID, cfg.WorkerURL, cfg.ReportInterval, cfg.CollectInterval, cfg.ResetDay, cfg.ConnectionMode, cfg.PingMode, firstNonEmpty(cfg.Interface, "auto"), cfg.AutoUpdate)
 
 	go a.networkWorker(ctx)
 	if a.usesWSS() {
 		a.reporter.start(ctx)
+	} else if cfg.ServerID == "" {
+		a.log.info("WSS disabled: 未绑定 SERVER_ID，先通过 POST 自动发现")
 	} else {
 		a.log.info("WSS disabled connection_mode=http")
 	}
@@ -244,9 +263,15 @@ func (a *Agent) loop(ctx context.Context) error {
 			return nil
 		case <-timer.C:
 			a.tick()
+			if a.discoveryAbandoned() {
+				return ErrAutoDiscoveryFailed
+			}
 			resetTimer(timer, a.tickInterval())
 		case <-a.wake:
 			a.tick()
+			if a.discoveryAbandoned() {
+				return ErrAutoDiscoveryFailed
+			}
 			resetTimer(timer, a.tickInterval())
 		case req := <-a.remoteConfig:
 			err := a.applyRemoteConfigWithOptions(req.body, req.headers, req.allowMissingMD5)
@@ -277,6 +302,11 @@ func (a *Agent) wakeTick() {
 	case a.wake <- struct{}{}:
 	default:
 	}
+}
+
+// discoveryAbandoned 表示未绑定 server id 且自动建号已中止（失败或重名），进程应退出。
+func (a *Agent) discoveryAbandoned() bool {
+	return a != nil && a.discoveryFailed.Load() && a.configSnapshot().ServerID == ""
 }
 
 func (a *Agent) tickInterval() time.Duration {
@@ -345,6 +375,10 @@ func (a *Agent) usesWSS() bool {
 }
 
 func (a *Agent) usesWSSConfig(cfg Config) bool {
+	// 未绑定 server id 时只走 POST：WSS 通道要求有效 id，空 id 会被直接拒绝。
+	if cfg.ServerID == "" {
+		return false
+	}
 	if !persistentUsesWSSConfig(cfg) {
 		return false
 	}
@@ -491,8 +525,65 @@ func (a *Agent) handleWSSRuntimeHeaders(headers http.Header) {
 	}
 }
 
+// applyAutoDiscoveryHeaders 处理服务端自动建号结果：
+//   - created：绑定 id 并立即落盘生效，落盘失败也保留内存值，避免下次上报仍为空 id 而重复建号；
+//   - reused：同名服务器已存在，不复用（避免把本机数据写进别人的服务器），提示后退出；
+//   - failed：建号失败，提示后退出，不重试。
+//
+// 退出由 loop 检测 discoveryAbandoned 后完成。
+func (a *Agent) applyAutoDiscoveryHeaders(headers http.Header) {
+	if a == nil || headers == nil {
+		return
+	}
+	raw := strings.ToLower(strings.TrimSpace(headers.Get(agentAutoDiscoveryHeader)))
+	if raw == "" {
+		return
+	}
+
+	status, code, _ := strings.Cut(raw, ":")
+	switch status {
+	case agentAutoDiscoveryCreated:
+		serverID := strings.TrimSpace(headers.Get(agentAutoDiscoveryServerIDKey))
+		if serverID == "" {
+			return
+		}
+		cfg := a.configSnapshot()
+		if cfg.ServerID == serverID {
+			return
+		}
+		nextCfg := cfg
+		nextCfg.ServerID = serverID
+		if err := writeConfig(a.paths.ConfigFile, nextCfg); err != nil {
+			a.log.warnf("自动发现绑定落盘失败（仅本次运行有效）: %v", err)
+		}
+		a.setConfig(nextCfg)
+		a.log.info("自动发现已创建服务器 id=%s name=%s", serverID, firstNonEmpty(cfg.Name, "ip"))
+	case agentAutoDiscoveryReused:
+		a.abortAutoDiscovery(agentAutoDiscoveryReused, strings.TrimSpace(headers.Get(agentAutoDiscoveryServerIDKey)))
+	case agentAutoDiscoveryFailed:
+		a.abortAutoDiscovery(agentAutoDiscoveryFailed, firstNonEmpty(code, "unknown"))
+	}
+}
+
+// abortAutoDiscovery 只输出提示并置位，随后由 loop 返回错误让进程退出；不写任何文件。
+func (a *Agent) abortAutoDiscovery(kind, detail string) {
+	if a.discoveryFailed.Swap(true) {
+		return
+	}
+	if kind == agentAutoDiscoveryReused {
+		a.log.warnf("自动发现中止：服务端已存在同名服务器 id=%s，为避免串号不再复用；cf-probe 将退出。请改用 install -id=%s 绑定，或更换 -name 后重试", detail, detail)
+		return
+	}
+	a.log.warnf("自动发现失败 code=%s，不再重试；cf-probe 将退出。请检查服务端自动发现开关与数据库，修复后重新执行 install 并传入 -id", detail)
+}
+
 func (a *Agent) tick() {
 	now := time.Now()
+	if a.discoveryAbandoned() {
+		// 未绑定 id 且自动建号已中止：上报必然是 404，停止采样与上报。
+		a.samples = nil
+		return
+	}
 	if a.reportPauseRemaining(now) > 0 {
 		// 熔断期间停止采样与序列化，这是 CPU 的主要节省点。
 		// 缓冲里剩下的样本属于熔断前的窗口，直接丢弃：恢复后补发会带旧时间戳，
@@ -772,6 +863,10 @@ func (a *Agent) buildReportBodyForConfig(cfg Config, m Metrics, reportAt time.Ti
 		"collect_interval": cfg.CollectInterval,
 		"report_interval":  cfg.ReportInterval,
 	}
+	// 仅在自动发现阶段有意义：服务端建号时用它作为服务器名称。
+	if name := strings.TrimSpace(cfg.Name); name != "" {
+		payload["name"] = name
+	}
 	if a.shouldReportConfigState(firstNonEmpty(cfg.ConfigMD5, "none"), reportAt) {
 		payload["config_schema"] = configSchemaVersion
 		payload["config_md5"] = firstNonEmpty(cfg.ConfigMD5, "none")
@@ -862,6 +957,10 @@ func (a *Agent) handleReportResponse(statusCode int, respBody []byte, headers ht
 
 func (a *Agent) handleTimedReportResponse(statusCode int, respBody []byte, headers http.Header, started, received time.Time) {
 	a.log.debugf("report response http=%d body=%s", statusCode, strings.TrimSpace(string(respBody)))
+	// 自动建号结果可能出现在任意状态码上（created/reused 通常为 2xx，failed 为 404；
+	// 服务端建号后仍可能因载荷校验失败返回 4xx，此时同样要绑定 id，否则下次上报会再建一台），
+	// 因此必须在状态判断之前处理；也必须在 applyRemoteConfig 之前绑定 id。
+	a.applyAutoDiscoveryHeaders(headers)
 	if statusCode < 200 || statusCode >= 300 {
 		return
 	}

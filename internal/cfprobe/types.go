@@ -25,6 +25,7 @@ type Config struct {
 	ServerID        string
 	Secret          string
 	WorkerURL       string
+	Name            string // 仅在自动发现阶段使用：未绑定 server id 时作为新建服务器的名称。
 	CollectInterval int
 	ReportInterval  int
 	CTNode          string

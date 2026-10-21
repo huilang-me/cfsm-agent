@@ -121,7 +121,7 @@ func TestApplyReportResultAlwaysClearsSamples(t *testing.T) {
 }
 
 func TestHandleConnectionErrorCountsClose1008(t *testing.T) {
-	agent := &Agent{log: newLogger(false)}
+	agent := &Agent{cfg: Config{ServerID: "srv-test", ConnectionMode: connectionModeAuto}, log: newLogger(false)}
 	transport := &reportTransport{agent: agent}
 	backoff := time.Duration(0)
 
