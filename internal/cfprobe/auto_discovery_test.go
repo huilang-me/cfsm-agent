@@ -1,6 +1,7 @@
 package cfprobe
 
 import (
+	"context"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -15,7 +16,7 @@ func newDiscoveryTestAgent(t *testing.T, cfg Config) *Agent {
 		cfg:   cfg,
 		log:   newLogger(false),
 		wake:  make(chan struct{}, 1),
-		paths: Paths{ConfigDir: dir, ConfigFile: filepath.Join(dir, "config.conf")},
+		paths: Paths{ConfigDir: dir, ConfigFile: filepath.Join(dir, "config.conf"), TrafficFile: filepath.Join(dir, "traffic.dat")},
 	}
 }
 
@@ -76,6 +77,81 @@ func TestApplyAutoDiscoveryCreatedBindsAndPersistsServerID(t *testing.T) {
 	}
 	if saved.Name != "hk-1" || saved.Secret != "secret" || saved.WorkerURL != "https://example.com" {
 		t.Fatalf("persisted config lost fields: %+v", saved)
+	}
+}
+
+// 建号成功等同于一次普通安装：建号那次上报只用来取 id，不占用上报节奏，
+// 下一次 tick 必须立刻带着新 id 再报一次，服务端才能按正常流程比对 md5 并入库。
+func TestAutoDiscoveryBindResetsReportCadence(t *testing.T) {
+	agent := newDiscoveryTestAgent(t, Config{
+		Secret:         "secret",
+		WorkerURL:      "https://example.com",
+		ConnectionMode: connectionModeAuto,
+		ReportInterval: 60,
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	agent.ctx = ctx
+	agent.reporter = &reportTransport{agent: agent, wsURL: "ws://127.0.0.1:9/update"}
+
+	agent.applyAutoDiscoveryHeaders(discoveryHeaders(agentAutoDiscoveryCreated, "srv-bound"))
+	if agent.reporter.running {
+		t.Fatal("WSS started before the follow-up report: it must not steal the first POST with the new id")
+	}
+	agent.applyReportResult(reportSendResult{ok: true, viaPOST: true}, time.Now())
+
+	if !agent.lastPost.IsZero() || !agent.lastReport.IsZero() {
+		t.Fatalf("lastPost = %s lastReport = %s, want zero so the next tick reports immediately", agent.lastPost, agent.lastReport)
+	}
+	if !agent.postAttemptAllowed(time.Now(), 60*time.Second) {
+		t.Fatal("postAttemptAllowed() = false: the follow-up report would be throttled to the next interval")
+	}
+	if agent.reporter.running {
+		t.Fatal("WSS started before the follow-up report is done")
+	}
+
+	// 带新 id 的补报完成：这时才按 connection_mode 启动传输层。
+	agent.applyReportResult(reportSendResult{ok: true, viaPOST: true}, time.Now())
+	if agent.lastPost.IsZero() {
+		t.Fatal("lastPost stays zero after a normal report")
+	}
+	if !agent.reporter.running {
+		t.Fatal("WSS not started after the follow-up report")
+	}
+}
+
+// 首次写入失败时 id 只在内存里，后续上报必须重试落盘，否则重启会重新走建号流程。
+func TestAutoDiscoveryRetriesPersistingServerID(t *testing.T) {
+	agent := newDiscoveryTestAgent(t, Config{
+		Secret:         "secret",
+		WorkerURL:      "https://example.com",
+		ConnectionMode: connectionModeHTTP,
+		ReportInterval: 60,
+	})
+	blocker := filepath.Join(t.TempDir(), "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatalf("WriteFile() error: %v", err)
+	}
+	agent.paths.ConfigFile = filepath.Join(blocker, "config.conf")
+
+	agent.applyAutoDiscoveryHeaders(discoveryHeaders(agentAutoDiscoveryCreated, "srv-retry"))
+	if agent.pendingPersistID != "srv-retry" {
+		t.Fatalf("pendingPersistID = %q, want srv-retry", agent.pendingPersistID)
+	}
+
+	// 配置目录恢复可写后，下一次上报结果处理就应该补写成功。
+	agent.paths.ConfigFile = filepath.Join(t.TempDir(), "config.conf")
+	agent.applyReportResult(reportSendResult{ok: true, viaPOST: true}, time.Now())
+
+	saved, err := readConfig(agent.paths.ConfigFile)
+	if err != nil {
+		t.Fatalf("readConfig() error: %v", err)
+	}
+	if saved.ServerID != "srv-retry" {
+		t.Fatalf("persisted ServerID = %q, want srv-retry", saved.ServerID)
+	}
+	if agent.pendingPersistID != "" {
+		t.Fatalf("pendingPersistID = %q, want empty after a successful retry", agent.pendingPersistID)
 	}
 }
 

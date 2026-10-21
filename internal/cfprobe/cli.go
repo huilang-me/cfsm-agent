@@ -86,8 +86,6 @@ func parseInstallOptions(args []string) (InstallOptions, error) {
 	fs.StringVar(&debug, "debug", "", "")
 	fs.StringVar(&opts.UpdateProxy, "install-ghproxy", "", "")
 	fs.StringVar(&ignoredInstallVersion, "install-version", "", "")
-	fs.BoolVar(&opts.NoStart, "no_start", false, "")
-	fs.BoolVar(&opts.NoStart, "no-start", false, "")
 
 	if err := fs.Parse(args); err != nil {
 		printUsage(os.Stderr)
@@ -167,12 +165,15 @@ func parseUninstallArgs(args []string) error {
 func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "用法:")
 	fmt.Fprintln(w, "  cf-probe install -id=SERVER_ID -secret=SECRET -url=WORKER_URL [选项]")
-	fmt.Fprintln(w, "  cf-probe install -secret=SECRET -url=WORKER_URL [-name=NAME]  # 不传 -id 时由服务端自动建号")
+	fmt.Fprintln(w, "  cf-probe install -secret=SECRET -url=WORKER_URL [-name=NAME]   # 不传 -id，由服务端自动建号")
 	fmt.Fprintln(w, "  cf-probe run [-debug=0|1]")
 	fmt.Fprintln(w, "  cf-probe uninstall")
 	fmt.Fprintln(w, "")
 	fmt.Fprintln(w, "安装选项:")
+	fmt.Fprintln(w, "  -id=SERVER_ID        服务器 ID；服务端开启自动发现时可省略")
 	fmt.Fprintln(w, "  -name=NAME           自动建号时的服务器名称，默认使用公网 IP")
+	fmt.Fprintln(w, "  -secret=SECRET       服务器密钥（首次安装必填）")
+	fmt.Fprintln(w, "  -url=WORKER_URL      上报地址（首次安装必填）")
 	fmt.Fprintln(w, "  -interval=N          上报间隔(秒)，默认60")
 	fmt.Fprintln(w, "  -collect_interval=N  采样间隔(秒)，默认0")
 	fmt.Fprintln(w, "  -ct/-cu/-cm/-bd=HOST 自定义测试节点，可写 host 或 host:port")
@@ -181,9 +182,12 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "  -connection_mode=MODE 连接模式 auto|http，默认auto")
 	fmt.Fprintln(w, "  -ping_mode=MODE      Ping 模式 tcp|icmp，默认tcp")
 	fmt.Fprintln(w, "  -auto_update=0|1     开启自动检查更新，默认0")
+	fmt.Fprintln(w, "  -install-ghproxy=URL 自动更新下载代理")
 	fmt.Fprintln(w, "  -rx_correction=N     下行流量校正(GB)")
 	fmt.Fprintln(w, "  -tx_correction=N     上行流量校正(GB)")
-	fmt.Fprintln(w, "  -debug=0|1           运行调试日志，默认0")
+	fmt.Fprintln(w, "  -debug=0|1           输出调试日志，默认0")
+	fmt.Fprintln(w, "")
+	fmt.Fprintln(w, "再次执行 install 会沿用已有配置，只覆盖本次显式传入的参数。")
 }
 
 func atoi64Default(raw string, def int64) int64 {

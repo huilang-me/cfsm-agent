@@ -30,6 +30,11 @@ type Agent struct {
 
 	// 自动建号失败后置位：本次运行不再重试建号，也不再上报（空 id 的上报必然 404）。
 	discoveryFailed atomic.Bool
+	// 建号成功的那一次上报只用来取 id：置位后由 applyReportResult 丢弃该次上报的节奏记录，
+	// 让下一次 tick 立刻带着新 id 再上报一次，服务端才能按正常安装的流程比对 md5 并入库。
+	discoveryJustBound atomic.Bool
+	// 上面那次“带 id 的补报”完成后才启动 WSS，保证补报一定走 POST（md5 比对 + 入库）。
+	discoverySyncPending atomic.Bool
 
 	mu         sync.RWMutex
 	probes     ProbeSnapshot
@@ -52,6 +57,10 @@ type Agent struct {
 	lastPostAttempt          time.Time
 	lastConfigStateReportAt  time.Time
 	lastConfigStateReportMD5 string
+	// 上一次被拒的配置原因：同一份坏配置服务端会持续重发，只提示一次。
+	lastConfigRejectKey string
+	// 自动发现拿到但没能写入配置文件的 id，后续上报会重试落盘。
+	pendingPersistID string
 	updateMu                 sync.Mutex
 	reporter                 *reportTransport
 	reportMu                 sync.Mutex
@@ -231,24 +240,19 @@ func Run(configFile string, debug bool, version string) error {
 	a.basicAt = time.Now()
 
 	a.log.info("CF-Server-Monitor Go Probe started version=%s platform=%s config=%s", version, platformName(), paths.ConfigFile)
-	if cfg.ServerID == "" {
-		a.log.info("未绑定 SERVER_ID：先通过 POST 自动发现，绑定成功后按服务端下发的 connection_mode 切换")
-	}
 	a.log.debugf("config id=%s url=%s report_interval=%ds collect_interval=%ds reset_day=%d connection_mode=%s ping_mode=%s interface=%s auto_update=%v",
 		cfg.ServerID, cfg.WorkerURL, cfg.ReportInterval, cfg.CollectInterval, cfg.ResetDay, cfg.ConnectionMode, cfg.PingMode, firstNonEmpty(cfg.Interface, "auto"), cfg.AutoUpdate)
 
 	go a.networkWorker(ctx)
 	if a.usesWSS() {
 		a.reporter.start(ctx)
-	} else if cfg.ServerID == "" {
-		a.log.info("WSS disabled: 未绑定 SERVER_ID，先通过 POST 自动发现")
-	} else {
+	} else if cfg.ServerID != "" {
 		a.log.info("WSS disabled connection_mode=http")
 	}
 	if cfg.AutoUpdate {
 		go a.autoUpdateWorker(ctx)
 	} else {
-		a.log.info("auto update disabled: local AUTO_UPDATE=0")
+		a.log.debugf("auto update disabled: local AUTO_UPDATE=0")
 	}
 	return a.loop(ctx)
 }
@@ -554,10 +558,20 @@ func (a *Agent) applyAutoDiscoveryHeaders(headers http.Header) {
 		nextCfg := cfg
 		nextCfg.ServerID = serverID
 		if err := writeConfig(a.paths.ConfigFile, nextCfg); err != nil {
-			a.log.warnf("自动发现绑定落盘失败（仅本次运行有效）: %v", err)
+			// 只写内存也能继续上报，但重启会丢掉 id，所以后续上报里持续重试写入。
+			a.pendingPersistID = serverID
+			a.log.warnf("自动发现 id 写入配置失败（本次运行仍生效，之后会自动重试）: %v", err)
 		}
 		a.setConfig(nextCfg)
-		a.log.info("自动发现已创建服务器 id=%s name=%s", serverID, firstNonEmpty(cfg.Name, "ip"))
+		a.log.info("自动发现已创建服务器，请两分钟后查看")
+		// 建号成功后等同于一次普通安装：下一次 tick 立即用新 id 再 POST 一次
+		// （服务端据此比对 md5 并入库），那次完成后再按 connection_mode 启动传输层。
+		a.discoveryJustBound.Store(true)
+		// 建号那次 POST 已经占用了一次尝试配额，这里必须清掉，
+		// 否则紧接着的补报会被 postAttemptAllowed 挡到下一个上报周期。
+		a.lastPostAttempt = time.Time{}
+		a.reporter.resetReportInterval()
+		a.wakeTick()
 	case agentAutoDiscoveryReused:
 		a.abortAutoDiscovery(agentAutoDiscoveryReused, strings.TrimSpace(headers.Get(agentAutoDiscoveryServerIDKey)))
 	case agentAutoDiscoveryFailed:
@@ -571,10 +585,10 @@ func (a *Agent) abortAutoDiscovery(kind, detail string) {
 		return
 	}
 	if kind == agentAutoDiscoveryReused {
-		a.log.warnf("自动发现中止：服务端已存在同名服务器 id=%s，为避免串号不再复用；cf-probe 将退出。请改用 install -id=%s 绑定，或更换 -name 后重试", detail, detail)
+		a.log.warnf("自动发现中止：已存在同名服务器 id=%s，为避免串号不复用。cf-probe 将退出，请改用 install -id=%s，或更换 -name 后重试", detail, detail)
 		return
 	}
-	a.log.warnf("自动发现失败 code=%s，不再重试；cf-probe 将退出。请检查服务端自动发现开关与数据库，修复后重新执行 install 并传入 -id", detail)
+	a.log.warnf("自动发现失败：code=%s，不再重试，cf-probe 将退出。请确认服务端已开启自动发现，或改用 install -id 安装", detail)
 }
 
 func (a *Agent) tick() {
@@ -663,6 +677,14 @@ func (a *Agent) tick() {
 // 这意味着服务端拒绝期间该窗口的采样点直接丢弃，不会在下次成功上报时补发；
 // 这是刻意取舍：补发会拖长 payload 且时间戳已经过期，服务端图表宁可有缺口。
 func (a *Agent) applyReportResult(result reportSendResult, now time.Time) {
+	defer a.persistPendingServerID()
+	// 建号那一次上报不算“已完成的上报”：不记录 lastPost/lastReport，
+	// 下一次 tick 立即带新 id 重报一次，让服务端走正常的 md5 比对与入库流程。
+	if a != nil && a.discoveryJustBound.Swap(false) {
+		a.samples = nil
+		a.discoverySyncPending.Store(true)
+		return
+	}
 	if result.ok {
 		if result.viaWSS {
 			a.lastReport = now
@@ -672,6 +694,24 @@ func (a *Agent) applyReportResult(result reportSendResult, now time.Time) {
 		}
 	}
 	a.samples = nil
+	// 带 id 的补报已经完成，这时才按 connection_mode 启动传输层（普通安装启动即如此），
+	// 之后的节奏由 WSS / POST 自行决定。
+	if a != nil && a.discoverySyncPending.Swap(false) && a.usesWSS() {
+		a.syncReportTransport()
+	}
+}
+
+// persistPendingServerID 重试写入自动发现拿到的 id：首次写入失败时 id 只在内存里，
+// 重启后配置仍是空 id，会重新走建号流程（同名会中止、名字变了会建出重复服务器）。
+func (a *Agent) persistPendingServerID() {
+	if a == nil || a.pendingPersistID == "" {
+		return
+	}
+	if err := writeConfig(a.paths.ConfigFile, a.configSnapshot()); err != nil {
+		return
+	}
+	a.pendingPersistID = ""
+	a.log.info("自动发现 id 已写入配置 %s，重启后无需重新建号", a.paths.ConfigFile)
 }
 
 func (a *Agent) appendSample(now time.Time, m Metrics) {
@@ -917,7 +957,7 @@ func (a *Agent) postReportBody(cfg Config, body []byte, sampleCount int, fallbac
 	started := time.Now()
 	resp, err := sharedReportHTTPClient(8*time.Second, usePublicDNSResolver(cfg)).Do(req)
 	if err != nil {
-		a.log.warnf("%s failed: %v", label, err)
+		a.log.debugf("%s failed: %v", label, err)
 		return 0, err
 	}
 	headerReceived := time.Now()
@@ -987,7 +1027,14 @@ func (a *Agent) handleTimedReportResponse(statusCode int, respBody []byte, heade
 	}
 	if statusCode == http.StatusOK {
 		if err := a.applyRemoteConfig(respBody, headers); err != nil {
-			a.log.warnf("dynamic configuration rejected: %v", err)
+			// 服务端会一直重发同一份配置，warnf 现在始终输出：
+			// 同一原因只提示一次，避免每个上报周期刷一行。
+			if key := err.Error(); key != a.lastConfigRejectKey {
+				a.lastConfigRejectKey = key
+				a.log.warnf("dynamic configuration rejected: %v", err)
+			}
+		} else {
+			a.lastConfigRejectKey = ""
 		}
 	}
 }

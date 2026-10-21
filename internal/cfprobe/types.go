@@ -72,7 +72,6 @@ type InstallOptions struct {
 	Debug          bool
 	RXCorrectionGB string
 	TXCorrectionGB string
-	NoStart        bool
 	Explicit       map[string]bool
 }
 

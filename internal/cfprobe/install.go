@@ -36,14 +36,13 @@ func Install(opts InstallOptions, version string) error {
 	existing, existingPath, existingErr := readInstallConfig(paths)
 	usingExistingConfig := existingErr == nil
 	if usingExistingConfig {
-		fmt.Printf("[INFO] Config source: %s\n", existingPath)
-		fmt.Printf("[INFO] 检测到已有配置，沿用 %s\n", paths.ConfigFile)
+		fmt.Printf("[INFO] 检测到已有配置，沿用 %s（本次只覆盖显式传入的参数）\n", existingPath)
 		flagConfig := opts.Config
 		opts.Config = existing
 		mergeExplicitInstallConfig(&opts.Config, flagConfig, opts.Explicit)
 	} else if opts.Secret == "" || opts.WorkerURL == "" {
 		printUsage(os.Stderr)
-		return errors.New("运行所需的 -secret/-url 参数不完整")
+		return errors.New("首次安装必须提供 -secret 和 -url，例如: cf-probe install -id=SERVER_ID -secret=SECRET -url=WORKER_URL")
 	}
 	if !usingExistingConfig || opts.ConfigMD5 == "" {
 		opts.ConfigMD5 = "none"
@@ -85,10 +84,8 @@ func Install(opts InstallOptions, version string) error {
 	if err := prepareManagementLogFile(paths); err != nil {
 		return err
 	}
-	if !opts.NoStart {
-		if err := startService(paths, opts.Debug); err != nil {
-			return err
-		}
+	if err := startService(paths, opts.Debug); err != nil {
+		return err
 	}
 	printInstallSummary(paths, opts)
 	return nil
@@ -282,10 +279,7 @@ func printInstallSummary(paths Paths, opts InstallOptions) {
 	fmt.Printf("  Service     : %s\n", paths.ServiceName)
 	fmt.Printf("  Binary      : %s\n", paths.BinaryFile)
 	fmt.Printf("  Config      : %s\n", paths.ConfigFile)
-	if opts.ServerID == "" {
-		fmt.Printf("  Server ID   : 自动发现（首次上报后绑定）\n")
-		fmt.Printf("  自动发现    : 建号失败或遇到同名服务器时，服务输出原因后退出，不会自动重启\n")
-	} else {
+	if opts.ServerID != "" {
 		fmt.Printf("  Server ID   : %s\n", opts.ServerID)
 	}
 	if opts.Name != "" {
@@ -293,20 +287,17 @@ func printInstallSummary(paths Paths, opts InstallOptions) {
 	}
 	fmt.Printf("  Secret      : ********\n")
 	fmt.Printf("  Worker URL  : %s\n", opts.WorkerURL)
-	fmt.Printf("  Report      : %ds\n", opts.ReportInterval)
-	fmt.Printf("  Collect     : %ds\n", opts.CollectInterval)
-	fmt.Printf("  Connection  : %s\n", opts.ConnectionMode)
-	fmt.Printf("  Auto Update : %v\n", opts.AutoUpdate)
 	fmt.Printf("  Debug       : %v\n", opts.Debug)
-	fmt.Printf("  Interface   : %s\n", firstNonEmpty(opts.Interface, "auto"))
-	if opts.ResetDay == 0 {
-		fmt.Println("  Reset Day   : 不重置")
-	} else {
-		fmt.Printf("  Reset Day   : %d号\n", opts.ResetDay)
-	}
 	printProbeNodes(opts)
 	printManagementCommands(paths)
 	fmt.Println("===========================================")
+	if opts.ServerID == "" {
+		fmt.Println("")
+		fmt.Println("  本次未传 -id，由服务端在首次上报时自动建号：")
+		fmt.Println("    - 用上方「实时日志」命令查看，出现「自动发现已创建服务器」即建号成功")
+		fmt.Println("    - 建号成功后约 2 分钟，面板才会显示该服务器")
+		fmt.Println("    - 若出现「自动发现中止」或「自动发现失败」，服务会退出，按日志原因处理后重新执行 install")
+	}
 }
 
 func initSystem() string {
