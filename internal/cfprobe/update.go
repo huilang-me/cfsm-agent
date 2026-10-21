@@ -72,6 +72,13 @@ func (a *Agent) autoUpdateWorker(ctx context.Context) {
 }
 
 func (a *Agent) checkAndScheduleAgentUpdate(reason string) {
+	if runtime.GOOS == "darwin" {
+		if ok, ver := darwinUpdateSupported(); !ok {
+			a.log.info("auto update skipped: current builds require macOS 13 Ventura or later reason=%s version=%s macos=%s", reason, a.version, ver)
+			return
+		}
+	}
+
 	cfg := a.configSnapshot()
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
@@ -86,6 +93,43 @@ func (a *Agent) checkAndScheduleAgentUpdate(reason string) {
 	}
 
 	a.scheduleAgentUpdate(candidate, reason, cfg)
+}
+
+// darwinUpdateSupported reports whether this macOS can run newly built release
+// binaries. Builds made with Go 1.27 record LC_BUILD_VERSION minos=13.0, so
+// dyld refuses to load them on macOS 12 and older. Self-replacing there would
+// leave the LaunchAgent pointing at a binary that cannot start, with no way to
+// recover remotely, so the update is skipped instead. A failed probe is treated
+// as unsupported: refusing an update is recoverable, a bricked probe is not.
+func darwinUpdateSupported() (bool, string) {
+	ver, err := darwinProductVersion()
+	if err != nil {
+		return false, ""
+	}
+	return darwinMajorVersion(ver) >= 13, ver
+}
+
+func darwinProductVersion() (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "sw_vers", "-productVersion").Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// darwinMajorVersion returns the leading numeric component of a macOS version
+// string, or 0 when it cannot be parsed.
+func darwinMajorVersion(ver string) int {
+	if i := strings.IndexByte(ver, '.'); i >= 0 {
+		ver = ver[:i]
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(ver))
+	if err != nil {
+		return 0
+	}
+	return n
 }
 
 func checkLatestUpdate(ctx context.Context, currentVersion string, usePublicDNS bool) (updateCandidate, bool, error) {

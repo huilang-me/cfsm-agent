@@ -543,7 +543,7 @@ docker buildx build --platform linux/amd64,linux/arm64 -t cfsm-agent:local --loa
 
 ## 从源码构建
 
-需要 Go `1.24` 或更新版本。
+需要 Go `1.27.3` 或更新版本。
 
 ```bash
 git clone https://github.com/huilang-me/cfsm-agent.git

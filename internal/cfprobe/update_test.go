@@ -211,6 +211,27 @@ func TestVerifyFileSHA256(t *testing.T) {
 		t.Fatal("verifyFileSHA256() succeeded with wrong checksum")
 	}
 }
+func TestDarwinMajorVersion(t *testing.T) {
+	tests := []struct {
+		in   string
+		want int
+	}{
+		{in: "12.7.6", want: 12},
+		{in: "13.0", want: 13},
+		{in: "26.1", want: 26},
+		{in: "13", want: 13},
+		{in: " 14.2 ", want: 14},
+		{in: "", want: 0},
+		{in: "abc", want: 0},
+		{in: "x.1", want: 0},
+	}
+	for _, tt := range tests {
+		if got := darwinMajorVersion(tt.in); got != tt.want {
+			t.Errorf("darwinMajorVersion(%q) = %d, want %d", tt.in, got, tt.want)
+		}
+	}
+}
+
 func testGitHubRelease(tag string, prerelease, draft bool, publishedAt time.Time, assetNames ...string) githubRelease {
 	assets := make([]githubReleaseAsset, 0, len(assetNames))
 	for _, name := range assetNames {

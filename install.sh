@@ -43,6 +43,31 @@ detect_os() {
     esac
 }
 
+# Binaries built with Go 1.27+ record LC_BUILD_VERSION minos=13.0, so dyld
+# refuses to load them on macOS 12 and older. Catch that before downloading,
+# otherwise the failure surfaces as the misleading "could not be executed"
+# message below. Uninstall only warns: blocking it would leave old systems
+# with no script-driven way to remove the agent.
+check_darwin_version() {
+    ver="$(sw_vers -productVersion 2>/dev/null || true)"
+    [ -n "$ver" ] || return 0
+    major="${ver%%.*}"
+    case "$major" in
+        ''|*[!0-9]*) return 0 ;;
+    esac
+    if [ "$major" -ge 13 ]; then
+        return 0
+    fi
+    case "${cmd:-install}" in
+        uninstall|remove|delete|purge)
+            log "[WARN] macOS $ver is older than the supported minimum macOS 13 Ventura."
+            log "[WARN] the temporary uninstaller may not run; if it fails, run the installed 'cf-probe uninstall' directly."
+            return 0
+            ;;
+    esac
+    die "macOS $ver is not supported: this release requires macOS 13 Ventura or later. Please install v1.0.20 or earlier."
+}
+
 # MIPS uname -m does NOT reveal byte order: modern kernels report "mips" for both
 # big-endian (ath79/ar71xx) and little-endian (ramips MT762x) routers, so mapping
 # uname -m directly to an asset hands little-endian devices the big-endian binary,
@@ -177,6 +202,12 @@ case "$cmd" in
 esac
 
 os_name="$(detect_os)"
+# Only the default "latest" path is gated. An explicit --install-version is a
+# deliberate choice, and pinning a version is exactly how macOS 12 users follow
+# the "install v1.0.20 or earlier" advice; gating it would make that impossible.
+if [ "$os_name" = "darwin" ] && [ "$INSTALL_VERSION" = "latest" ]; then
+    check_darwin_version
+fi
 arch_name="$(detect_arch)"
 asset="cf-probe-${os_name}-${arch_name}"
 if [ "$os_name" = "windows" ]; then
