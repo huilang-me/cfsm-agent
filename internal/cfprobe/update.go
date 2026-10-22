@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"time"
@@ -138,6 +139,9 @@ func checkLatestUpdate(ctx context.Context, currentVersion string, usePublicDNS 
 		return updateCandidate{}, false, err
 	}
 	assetName := expectedUpdateAssetName(runtime.GOOS, nativeArch())
+	if assetName == "" {
+		return updateCandidate{}, false, errors.New("cannot determine a compatible update asset for this build")
+	}
 	releases, err := listGitHubReleases(ctx, owner, name, usePublicDNS)
 	if err != nil {
 		return updateCandidate{}, false, err
@@ -262,6 +266,36 @@ func findReleaseAsset(release githubRelease, assetName string) (githubReleaseAss
 }
 
 func expectedUpdateAssetName(goos, goarch string) string {
+	goarm := ""
+	if goos == "linux" && goarch == "arm" {
+		if info, ok := debug.ReadBuildInfo(); ok {
+			for _, setting := range info.Settings {
+				if setting.Key == "GOARM" {
+					goarm = setting.Value
+					break
+				}
+			}
+		}
+	}
+	return updateAssetNameForARM(goos, goarch, goarm)
+}
+
+func updateAssetNameForARM(goos, goarch, goarm string) string {
+	if goos == "linux" && goarch == "arm" {
+		switch goarm {
+		case "5", "5,softfloat", "5,hardfloat":
+			goarch = "armv5"
+		case "6", "6,hardfloat":
+			goarch = "armv6"
+		case "7", "7,hardfloat":
+			goarch = "armv7"
+		default:
+			// Published ARMv6/v7 assets require hardware floating point. Skip
+			// softfloat builds and unknown settings rather than risk an upgrade
+			// the CPU cannot run.
+			return ""
+		}
+	}
 	name := fmt.Sprintf("cf-probe-%s-%s", goos, goarch)
 	if goos == "windows" {
 		name += ".exe"
@@ -328,25 +362,30 @@ func fetchUpdateBinary(configDir string, candidate updateCandidate, proxy string
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	client := newUpdateHTTPClient(5*time.Minute, usePublicDNS)
-	checksums, checksumErr := downloadUpdateChecksums(ctx, client, candidate.TagName, proxy)
+	defer client.CloseIdleConnections()
+	checksums, err := downloadUpdateChecksums(ctx, client, candidate.TagName, proxy)
+	if err != nil {
+		return "", fmt.Errorf("download update checksums: %w", err)
+	}
+	expected, ok := checksumForAsset(checksums, candidate.AssetName)
+	if !ok {
+		return "", fmt.Errorf("checksum missing for %s", candidate.AssetName)
+	}
 	if err := downloadToFile(ctx, client, rawURL, dest); err != nil {
 		return "", err
 	}
-	if checksumErr == nil {
-		expected, ok := checksumForAsset(checksums, candidate.AssetName)
-		if !ok {
-			_ = os.Remove(dest)
-			return "", fmt.Errorf("checksum missing for %s", candidate.AssetName)
-		}
-		if err := verifyFileSHA256(dest, expected); err != nil {
-			_ = os.Remove(dest)
-			return "", err
-		}
+	if err := verifyFileSHA256(dest, expected); err != nil {
+		_ = os.Remove(dest)
+		return "", err
 	}
 	return dest, nil
 }
 
 func downloadToFile(ctx context.Context, client *http.Client, rawURL, dest string) error {
+	return downloadToFileWithLimit(ctx, client, rawURL, dest, 512<<20)
+}
+
+func downloadToFileWithLimit(ctx context.Context, client *http.Client, rawURL, dest string, maxBytes int64) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return err
@@ -360,12 +399,15 @@ func downloadToFile(ctx context.Context, client *http.Client, rawURL, dest strin
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("download %s returned http %d", rawURL, resp.StatusCode)
 	}
+	if resp.ContentLength > maxBytes {
+		return fmt.Errorf("download %s exceeded %d bytes", rawURL, maxBytes)
+	}
 	tmp := dest + ".download"
 	out, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
 	if err != nil {
 		return err
 	}
-	_, copyErr := io.Copy(out, io.LimitReader(resp.Body, 512<<20))
+	written, copyErr := io.Copy(out, io.LimitReader(resp.Body, maxBytes+1))
 	closeErr := out.Close()
 	if copyErr != nil {
 		_ = os.Remove(tmp)
@@ -374,6 +416,10 @@ func downloadToFile(ctx context.Context, client *http.Client, rawURL, dest strin
 	if closeErr != nil {
 		_ = os.Remove(tmp)
 		return closeErr
+	}
+	if written == 0 || written > maxBytes {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("download %s has invalid size %d (limit %d)", rawURL, written, maxBytes)
 	}
 	if err := os.Chmod(tmp, 0o755); err != nil {
 		_ = os.Remove(tmp)

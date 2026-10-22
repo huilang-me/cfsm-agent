@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -58,6 +59,94 @@ func TestExpectedUpdateAssetName(t *testing.T) {
 		if got := expectedUpdateAssetName(tt.goos, tt.goarch); got != tt.want {
 			t.Fatalf("expectedUpdateAssetName(%q, %q) = %q, want %q", tt.goos, tt.goarch, got, tt.want)
 		}
+	}
+}
+
+func TestLinuxARMUpdateMatchesPublishedAssets(t *testing.T) {
+	for _, tt := range []struct {
+		goarm string
+		want  string
+	}{
+		{"5", "cf-probe-linux-armv5"},
+		{"5,softfloat", "cf-probe-linux-armv5"},
+		{"5,hardfloat", "cf-probe-linux-armv5"},
+		{"6", "cf-probe-linux-armv6"},
+		{"6,hardfloat", "cf-probe-linux-armv6"},
+		{"6,softfloat", ""},
+		{"7", "cf-probe-linux-armv7"},
+		{"7,hardfloat", "cf-probe-linux-armv7"},
+		{"7,softfloat", ""},
+		{"", ""},
+		{"8", ""},
+		{"6,unknown", ""},
+		{"7,hardfloat,softfloat", ""},
+	} {
+		asset := updateAssetNameForARM("linux", "arm", tt.goarm)
+		if asset != tt.want {
+			t.Fatalf("GOARM=%q asset=%q, want %q", tt.goarm, asset, tt.want)
+		}
+		if asset == "" {
+			continue
+		}
+		current, err := parseUpdateVersion("v1.0.0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		releases := []githubRelease{testGitHubRelease("v1.0.1", false, false, time.Now(), asset)}
+		if _, ok := selectLatestStableRelease(releases, asset, current); !ok {
+			t.Fatalf("GOARM=%q could not select published asset %s", tt.goarm, asset)
+		}
+	}
+	if got := updateAssetNameForARM("freebsd", "arm", ""); got != "cf-probe-freebsd-arm" {
+		t.Fatalf("FreeBSD asset changed to %q", got)
+	}
+}
+
+func TestFetchUpdateBinaryRequiresChecksum(t *testing.T) {
+	const assetName = "cf-probe-test.bin"
+	body := []byte("new binary content")
+	sum := sha256.Sum256(body)
+	validChecksum := hex.EncodeToString(sum[:]) + "  dist/" + assetName + "\n"
+	for _, tt := range []struct {
+		name          string
+		checksumCode  int
+		checksums     string
+		wantError     bool
+		assetRequests int
+	}{
+		{"checksums unavailable", http.StatusNotFound, "", true, 0},
+		{"asset checksum missing", http.StatusOK, "", true, 0},
+		{"checksum mismatch", http.StatusOK, strings.Repeat("0", 64) + "  " + assetName, true, 1},
+		{"verified asset", http.StatusOK, validChecksum, false, 1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			assetRequests := make(chan struct{}, 2)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasSuffix(r.URL.Path, "/checksums.txt") {
+					w.WriteHeader(tt.checksumCode)
+					_, _ = w.Write([]byte(tt.checksums))
+					return
+				}
+				assetRequests <- struct{}{}
+				_, _ = w.Write(body)
+			}))
+			defer server.Close()
+			dir := t.TempDir()
+			path, err := fetchUpdateBinary(dir, updateCandidate{TagName: "v1.0.1", AssetName: assetName}, server.URL, false)
+			if (err != nil) != tt.wantError {
+				t.Fatalf("path=%q error=%v, want error=%v", path, err, tt.wantError)
+			}
+			if got := len(assetRequests); got != tt.assetRequests {
+				t.Fatalf("asset requests=%d, want %d", got, tt.assetRequests)
+			}
+			if tt.wantError {
+				if path != "" {
+					t.Fatalf("unverified asset returned for installation: %q", path)
+				}
+			} else if data, readErr := os.ReadFile(path); readErr != nil || string(data) != string(body) {
+				t.Fatalf("verified binary=%q, error=%v", data, readErr)
+			}
+		})
 	}
 }
 

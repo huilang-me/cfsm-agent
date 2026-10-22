@@ -11,21 +11,7 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-
-      - name: Vet
-        run: go vet ./...
-
-      - name: Test
-        run: go test ./...
+    uses: ./.github/workflows/test.yml
 
   cross-compile-smoke:
     runs-on: ubuntu-latest

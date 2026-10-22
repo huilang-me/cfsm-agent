@@ -15,7 +15,12 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
+  test:
+    if: ${{ github.event_name == 'workflow_dispatch' || !github.event.release.prerelease }}
+    uses: ./.github/workflows/test.yml
+
   build-and-push-multi-arch:
+    needs: test
     # 仅在正式 release(非预发布)或手动触发时发布镜像。
     if: ${{ github.event_name == 'workflow_dispatch' || !github.event.release.prerelease }}
     runs-on: ubuntu-latest

@@ -101,28 +101,45 @@ func readMemoryStats() (MemoryStats, bool) {
 	}, true
 }
 
-func readNetBytes(ifaces string) NetBytes {
+func readNetBytes(ifaces string) (NetBytes, error) {
 	wanted := splitInterfaceSet(ifaces)
 	var total NetBytes
-	_ = scanFile("/proc/net/dev", func(line string) {
+	var parseErr error
+	matched := 0
+	err := scanFile("/proc/net/dev", func(line string) {
 		if !strings.Contains(line, ":") {
 			return
 		}
 		name, rest, _ := strings.Cut(strings.TrimSpace(line), ":")
 		name = strings.TrimSpace(name)
 		fields := strings.Fields(rest)
-		if len(fields) < 16 {
-			return
-		}
 		if !shouldIncludeNetInterface(name, wanted) {
 			return
 		}
-		rx, _ := strconv.ParseUint(fields[0], 10, 64)
-		tx, _ := strconv.ParseUint(fields[8], 10, 64)
+		if len(fields) < 16 {
+			parseErr = fmt.Errorf("invalid network counters for %s", name)
+			return
+		}
+		rx, rxErr := strconv.ParseUint(fields[0], 10, 64)
+		tx, txErr := strconv.ParseUint(fields[8], 10, 64)
+		if rxErr != nil || txErr != nil {
+			parseErr = fmt.Errorf("invalid network counters for %s", name)
+			return
+		}
 		total.RX += rx
 		total.TX += tx
+		matched++
 	})
-	return total
+	if err != nil {
+		return NetBytes{}, err
+	}
+	if parseErr != nil {
+		return NetBytes{}, parseErr
+	}
+	if matched == 0 {
+		return NetBytes{}, fmt.Errorf("no matching network interfaces")
+	}
+	return total, nil
 }
 
 func readMemInfo() map[string]uint64 {

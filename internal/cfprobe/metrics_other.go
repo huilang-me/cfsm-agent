@@ -3,6 +3,7 @@
 package cfprobe
 
 import (
+	"errors"
 	"runtime"
 	"strconv"
 	"strings"
@@ -33,8 +34,8 @@ func readMemoryStats() (MemoryStats, bool) {
 	return MemoryStats{}, false
 }
 
-func readNetBytes(_ string) NetBytes {
-	return NetBytes{}
+func readNetBytes(_ string) (NetBytes, error) {
+	return NetBytes{}, errors.New("network counters are unsupported on this platform")
 }
 
 func readDiskIOCounters(_ []DiskDeviceRef) DiskIOCounters {

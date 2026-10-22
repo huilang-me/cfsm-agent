@@ -64,21 +64,26 @@ func readMemoryStats() (MemoryStats, bool) {
 	}, true
 }
 
-func readNetBytes(ifaces string) NetBytes {
+func readNetBytes(ifaces string) (NetBytes, error) {
 	wanted := splitInterfaceSet(ifaces)
 	counters, err := gopsutilNet.IOCounters(true)
 	if err != nil {
-		return NetBytes{}
+		return NetBytes{}, err
 	}
 	var total NetBytes
+	matched := 0
 	for _, counter := range counters {
 		if !shouldIncludeNetInterface(counter.Name, wanted) {
 			continue
 		}
 		total.RX += counter.BytesRecv
 		total.TX += counter.BytesSent
+		matched++
 	}
-	return total
+	if matched == 0 {
+		return NetBytes{}, fmt.Errorf("no matching network interfaces")
+	}
+	return total, nil
 }
 
 func readDiskIOCounters(_ []DiskDeviceRef) DiskIOCounters {

@@ -1,11 +1,57 @@
 package cfprobe
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestPrepareInstallTrafficCorrection(t *testing.T) {
+	readErr := errors.New("network counters unavailable")
+	baseline := NetBytes{RX: 123, TX: 456}
+	for _, tt := range []struct {
+		name      string
+		rx, tx    string
+		readErr   error
+		wantReads int
+		wantError bool
+	}{
+		{name: "no correction"},
+		{name: "zero correction", rx: "0", wantReads: 1},
+		{name: "receive correction", rx: "1.5", wantReads: 1},
+		{name: "transmit correction", tx: "2", wantReads: 1},
+		{name: "invalid receive correction", rx: "-1", wantError: true},
+		{name: "invalid transmit correction", rx: "1", tx: "invalid", wantError: true},
+		{name: "failed network read", rx: "1", readErr: readErr, wantReads: 1, wantError: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			opts := InstallOptions{Config: Config{Interface: "eth0,eth1"}, RXCorrectionGB: tt.rx, TXCorrectionGB: tt.tx}
+			reads := 0
+			got, err := prepareInstallTrafficCorrection(opts, func(iface string) (NetBytes, error) {
+				reads++
+				if iface != opts.Interface {
+					t.Fatalf("sampled interface %q, want %q", iface, opts.Interface)
+				}
+				return baseline, tt.readErr
+			})
+			if (err != nil) != tt.wantError || reads != tt.wantReads {
+				t.Fatalf("error=%v reads=%d, want error=%v reads=%d", err, reads, tt.wantError, tt.wantReads)
+			}
+			if tt.readErr != nil && !errors.Is(err, tt.readErr) {
+				t.Fatalf("network read error not preserved: %v", err)
+			}
+			want := NetBytes{}
+			if !tt.wantError && tt.wantReads > 0 {
+				want = baseline
+			}
+			if got != want {
+				t.Fatalf("baseline=%+v, want %+v", got, want)
+			}
+		})
+	}
+}
 
 func TestMergeExplicitInstallConfig(t *testing.T) {
 	existing := Config{

@@ -4,6 +4,7 @@ package cfprobe
 
 import (
 	"encoding/json"
+	"fmt"
 	"runtime"
 	"strconv"
 	"strings"
@@ -304,11 +305,14 @@ func stringFromAny(v any) string {
 	}
 }
 
-func readNetBytes(ifaces string) NetBytes {
+func readNetBytes(ifaces string) (NetBytes, error) {
 	wanted := splitInterfaceSet(ifaces)
 	seen := map[string]bool{}
 	var total NetBytes
-	out := commandOutput("netstat", "-ibn")
+	out, err := commandOutputChecked("netstat", "-ibn")
+	if err != nil {
+		return NetBytes{}, err
+	}
 	for _, line := range strings.Split(out, "\n") {
 		fields := strings.Fields(line)
 		if len(fields) < 10 || fields[0] == "Name" || !strings.HasPrefix(fields[2], "<Link#") {
@@ -325,13 +329,19 @@ func readNetBytes(ifaces string) NetBytes {
 		} else if name == "lo0" || strings.HasPrefix(name, "utun") || strings.HasPrefix(name, "awdl") {
 			continue
 		}
-		rx, _ := strconv.ParseUint(fields[6], 10, 64)
-		tx, _ := strconv.ParseUint(fields[9], 10, 64)
+		rx, rxErr := strconv.ParseUint(fields[6], 10, 64)
+		tx, txErr := strconv.ParseUint(fields[9], 10, 64)
+		if rxErr != nil || txErr != nil {
+			return NetBytes{}, fmt.Errorf("invalid network counters for %s", name)
+		}
 		total.RX += rx
 		total.TX += tx
 		seen[name] = true
 	}
-	return total
+	if len(seen) == 0 {
+		return NetBytes{}, fmt.Errorf("no matching network interfaces")
+	}
+	return total, nil
 }
 
 func readDiskIOCounters(_ []DiskDeviceRef) DiskIOCounters {

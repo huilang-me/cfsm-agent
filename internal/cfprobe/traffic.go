@@ -34,6 +34,26 @@ func readTrafficState(path string) trafficState {
 	}
 }
 
+// readMonthlyTrafficTotals restores matching totals without changing the
+// persisted counter baseline when a fresh network sample is unavailable.
+func readMonthlyTrafficTotals(path string, resetDay int, iface string, now time.Time) (uint64, uint64) {
+	st := readTrafficState(path)
+	if st.LastCheck == 0 || st.Interface != iface {
+		return 0, 0
+	}
+	if currentPeriod := periodStartTS(now, resetDay); currentPeriod != 0 {
+		savedPeriod := st.PeriodStart
+		if savedPeriod == 0 {
+			// Older states and traffic corrections may not record a period start.
+			savedPeriod = periodStartTS(time.Unix(st.LastCheck, 0).In(now.Location()), resetDay)
+		}
+		if savedPeriod != currentPeriod {
+			return 0, 0
+		}
+	}
+	return st.RXPeriod, st.TXPeriod
+}
+
 func writeTrafficState(path string, st trafficState) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
@@ -47,7 +67,7 @@ func writeTrafficState(path string, st trafficState) error {
 	return os.Rename(tmp, path)
 }
 
-func calcMonthlyTraffic(path string, current NetBytes, resetDay int, iface string) (uint64, uint64) {
+func calcMonthlyTraffic(path string, current NetBytes, resetDay int, iface string) (uint64, uint64, error) {
 	nowTime := time.Now()
 	now := nowTime.Unix()
 	st := readTrafficState(path)
@@ -61,8 +81,7 @@ func calcMonthlyTraffic(path string, current NetBytes, resetDay int, iface strin
 		st.LastCheck = now
 		st.PeriodStart = periodStart
 		st.Interface = iface
-		_ = writeTrafficState(path, st)
-		return st.RXPeriod, st.TXPeriod
+		return st.RXPeriod, st.TXPeriod, writeTrafficState(path, st)
 	}
 
 	var rxDelta, txDelta uint64
@@ -84,8 +103,15 @@ func calcMonthlyTraffic(path string, current NetBytes, resetDay int, iface strin
 	st.LastCheck = now
 	st.PeriodStart = periodStart
 	st.Interface = iface
-	_ = writeTrafficState(path, st)
-	return st.RXPeriod, st.TXPeriod
+	return st.RXPeriod, st.TXPeriod, writeTrafficState(path, st)
+}
+
+func applyTrafficCorrectionFromNetwork(path, iface, rxGB, txGB string) error {
+	current, err := readNetBytes(iface)
+	if err != nil {
+		return fmt.Errorf("read network counters before traffic correction: %w", err)
+	}
+	return applyTrafficCorrection(path, current, iface, rxGB, txGB)
 }
 
 func applyTrafficCorrection(path string, current NetBytes, iface string, rxGB, txGB string) error {

@@ -7,9 +7,62 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"testing"
 	"time"
 )
+
+func TestDownloadToFileRejectsIncompleteAndOversizedBodies(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		body      string
+		chunked   bool
+		truncated bool
+		wantError bool
+	}{
+		{name: "exact limit", body: "data"},
+		{name: "known oversized body", body: "too large", wantError: true},
+		{name: "streamed oversized body", body: "too large", chunked: true, wantError: true},
+		{name: "empty body", wantError: true},
+		{name: "truncated body", body: "da", truncated: true, wantError: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if tt.truncated {
+					w.Header().Set("Content-Length", "3")
+				} else if !tt.chunked {
+					w.Header().Set("Content-Length", strconv.Itoa(len(tt.body)))
+				}
+				if tt.chunked {
+					w.(http.Flusher).Flush()
+				}
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer server.Close()
+			dest := filepath.Join(t.TempDir(), "update.bin")
+			if err := os.WriteFile(dest, []byte("previous binary"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			err := downloadToFileWithLimit(ctx, server.Client(), server.URL, dest, 4)
+			if (err != nil) != tt.wantError {
+				t.Fatalf("error=%v, want error=%v", err, tt.wantError)
+			}
+			want := tt.body
+			if tt.wantError {
+				want = "previous binary"
+			}
+			data, err := os.ReadFile(dest)
+			if err != nil || string(data) != want {
+				t.Fatalf("binary=%q error=%v, want %q", data, err, want)
+			}
+			if _, err := os.Stat(dest + ".download"); !os.IsNotExist(err) {
+				t.Fatalf("temporary download left behind: %v", err)
+			}
+		})
+	}
+}
 
 func TestNormalizeUpdateDNSServer(t *testing.T) {
 	tests := []struct {

@@ -233,11 +233,10 @@ func Run(configFile string, debug bool, version string) error {
 		log:          newLogger(debug),
 		version:      version,
 		ctx:          ctx,
-		prevNet:      readNetBytes(cfg.Interface),
-		prevTime:     time.Now(),
 		wake:         make(chan struct{}, 1),
 		remoteConfig: make(chan remoteConfigRequest, 4),
 	}
+	a.resetNetworkBaseline(cfg.Interface)
 	a.reporter = newReportTransport(a)
 	a.basic = collectBasicStats()
 	a.basicAt = time.Now()
@@ -257,7 +256,15 @@ func Run(configFile string, debug bool, version string) error {
 	} else {
 		a.log.debugf("auto update disabled: local AUTO_UPDATE=0")
 	}
-	return a.loop(ctx)
+	err = a.loop(ctx)
+	if errors.Is(err, ErrAutoDiscoveryFailed) && serviceSystem(paths) == "procd" {
+		// procd 的 respawn 不区分退出码，先删除运行实例，避免自动发现失败后被重新拉起。
+		payload := fmt.Sprintf(`{"name":%q}`, paths.ServiceName)
+		if stopErr := runCommandQuiet("ubus", "call", "service", "delete", payload); stopErr != nil {
+			a.log.warnf("停止 procd 服务失败: %v", stopErr)
+		}
+	}
+	return err
 }
 
 func (a *Agent) loop(ctx context.Context) error {
@@ -400,6 +407,13 @@ func (a *Agent) configSnapshot() Config {
 	a.cfgMu.RLock()
 	defer a.cfgMu.RUnlock()
 	return a.cfg
+}
+
+func (a *Agent) requestContext() context.Context {
+	if a != nil && a.ctx != nil {
+		return a.ctx
+	}
+	return context.Background()
 }
 
 func (a *Agent) setConfig(cfg Config) {
@@ -654,23 +668,8 @@ func (a *Agent) tick() {
 	} else {
 		a.refreshRealtimeBasicStats()
 	}
-	netNow := readNetBytes(cfg.Interface)
-	dt := now.Sub(a.prevTime).Seconds()
-	if dt <= 0 {
-		dt = float64(cfg.ReportInterval)
-	}
-	rxDelta := uint64(0)
-	txDelta := uint64(0)
-	if netNow.RX >= a.prevNet.RX {
-		rxDelta = netNow.RX - a.prevNet.RX
-	}
-	if netNow.TX >= a.prevNet.TX {
-		txDelta = netNow.TX - a.prevNet.TX
-	}
-	rxSpeed := uint64(float64(rxDelta) / dt)
-	txSpeed := uint64(float64(txDelta) / dt)
-	a.prevNet = netNow
-	a.prevTime = now
+	netNow, netErr := readNetBytes(cfg.Interface)
+	netNow, rxSpeed, txSpeed := a.networkRates(now, netNow, netErr)
 
 	cpu := "0.00"
 	if usage, ok := readCPUPercent(); ok {
@@ -678,7 +677,18 @@ func (a *Agent) tick() {
 	}
 
 	if fullDue {
-		a.monthlyRX, a.monthlyTX = calcMonthlyTraffic(a.paths.TrafficFile, netNow, cfg.ResetDay, cfg.Interface)
+		// Failed reads must not replace the persisted counter baseline with zero.
+		if netErr == nil {
+			var err error
+			a.monthlyRX, a.monthlyTX, err = calcMonthlyTraffic(a.paths.TrafficFile, netNow, cfg.ResetDay, cfg.Interface)
+			if err != nil {
+				a.log.warnfOnce("traffic-state", "monthly traffic checkpoint failed: %v", err)
+			}
+		} else if a.fullAt.IsZero() {
+			// Startup and configuration refresh must retain valid saved totals
+			// even if the first network read fails. Keep live cached totals later.
+			a.monthlyRX, a.monthlyTX = readMonthlyTrafficTotals(a.paths.TrafficFile, cfg.ResetDay, cfg.Interface, now)
+		}
 		a.diskIO = a.sampleDiskIO(now)
 		a.fullAt = now
 	}
@@ -689,6 +699,32 @@ func (a *Agent) tick() {
 	if shouldWSSReport || shouldPostReport {
 		a.applyReportResult(a.sendReport(cfg, m, shouldWSSReport, shouldPostReport, reportInterval), now)
 	}
+}
+
+func (a *Agent) resetNetworkBaseline(iface string) {
+	current, err := readNetBytes(iface)
+	a.prevNet = current
+	a.prevTime = time.Time{}
+	if err == nil {
+		a.prevTime = time.Now()
+	}
+}
+
+func (a *Agent) networkRates(now time.Time, current NetBytes, err error) (NetBytes, uint64, uint64) {
+	if err != nil {
+		a.log.warnfOnce("network-counters", "network counters unavailable: %v", err)
+		return a.prevNet, 0, 0
+	}
+	var rxSpeed, txSpeed uint64
+	if !a.prevTime.IsZero() {
+		if elapsed := now.Sub(a.prevTime).Seconds(); elapsed > 0 {
+			rxSpeed = uint64(float64(counterDelta(a.prevNet.RX, current.RX)) / elapsed)
+			txSpeed = uint64(float64(counterDelta(a.prevNet.TX, current.TX)) / elapsed)
+		}
+	}
+	a.prevNet = current
+	a.prevTime = now
+	return current, rxSpeed, txSpeed
 }
 
 // applyReportResult 更新上报时间，并在每次上报尝试后清空样本窗口：
@@ -965,7 +1001,7 @@ func (a *Agent) postReportBody(cfg Config, body []byte, sampleCount int, fallbac
 		label = "POST fallback"
 	}
 	a.log.debugf("%s attempt url=%s payload_bytes=%d samples=%d", label, cfg.WorkerURL, len(body), sampleCount)
-	req, err := http.NewRequest(http.MethodPost, cfg.WorkerURL, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(a.requestContext(), http.MethodPost, cfg.WorkerURL, bytes.NewReader(body))
 	if err != nil {
 		a.log.warnfOnce("create-request:"+label, "create %s request failed: %v", label, err)
 		return 0, err
@@ -1239,7 +1275,7 @@ func (a *Agent) applyRemoteConfigWithOptions(body []byte, headers http.Header, a
 		if hasCorrection {
 			rx := values.Get("rx_correction")
 			tx := values.Get("tx_correction")
-			if err := applyTrafficCorrection(a.paths.TrafficFile, readNetBytes(cfg.Interface), cfg.Interface, rx, tx); err != nil {
+			if err := applyTrafficCorrectionFromNetwork(a.paths.TrafficFile, cfg.Interface, rx, tx); err != nil {
 				return err
 			}
 			_ = a.sendCorrectionConfirm(cfg, rx, tx)
@@ -1325,9 +1361,7 @@ func (a *Agent) applyRemoteConfigWithOptions(body []byte, headers http.Header, a
 			return err
 		}
 		a.setConfig(nextCfg)
-		now := time.Now()
-		a.prevNet = readNetBytes(nextCfg.Interface)
-		a.prevTime = now
+		a.resetNetworkBaseline(nextCfg.Interface)
 		a.prevDisk = DiskIOCounters{}
 		a.prevDiskAt = time.Time{}
 		a.diskIO = DiskIOStats{}
@@ -1352,7 +1386,7 @@ func (a *Agent) applyRemoteConfigWithOptions(body []byte, headers http.Header, a
 	if hasCorrection {
 		rx := values.Get("rx_correction")
 		tx := values.Get("tx_correction")
-		if err := applyTrafficCorrection(a.paths.TrafficFile, readNetBytes(cfg.Interface), cfg.Interface, rx, tx); err != nil {
+		if err := applyTrafficCorrectionFromNetwork(a.paths.TrafficFile, cfg.Interface, rx, tx); err != nil {
 			return err
 		}
 		_ = a.sendCorrectionConfirm(cfg, rx, tx)
@@ -1425,7 +1459,7 @@ func (a *Agent) sendCorrectionConfirm(cfg Config, rx, tx string) error {
 		"tx_correction": parseFloatDefault(tx, 0),
 	}
 	body, _ := json.Marshal(payload)
-	req, err := http.NewRequest(http.MethodPost, cfg.WorkerURL, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(a.requestContext(), http.MethodPost, cfg.WorkerURL, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}

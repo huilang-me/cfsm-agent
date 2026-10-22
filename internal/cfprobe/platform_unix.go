@@ -890,14 +890,6 @@ func runCommandQuiet(name string, args ...string) error {
 	return cmd.Run()
 }
 
-func commandOutput(name string, args ...string) string {
-	out, err := exec.Command(name, args...).Output()
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(out))
-}
-
 func commandExists(name string) bool {
 	_, err := exec.LookPath(name)
 	return err == nil

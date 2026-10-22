@@ -256,8 +256,9 @@ log "[WARN] cannot execute bootstrap binary from $tmp; trying executable staging
 if [ -n "${HOME:-}" ]; then
     if stage_and_run_payload "$HOME/.cf-probe/tmp" "$@"; then
         exit 0
+    else
+        status=$?
     fi
-    status=$?
     if [ "$status" -ne 125 ] && [ "$status" -ne 126 ]; then
         exit "$status"
     fi
@@ -270,8 +271,9 @@ fi
 for dir in $fallback_dirs; do
     if stage_and_run_payload "$dir" "$@"; then
         exit 0
+    else
+        status=$?
     fi
-    status=$?
     if [ "$status" -ne 125 ] && [ "$status" -ne 126 ]; then
         exit "$status"
     fi

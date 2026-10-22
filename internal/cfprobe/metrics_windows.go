@@ -54,15 +54,24 @@ func readMemoryStats() (MemoryStats, bool) {
 }
 
 func windowsPowerShellOutput(script string) string {
-	prefix := "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $OutputEncoding = [System.Text.Encoding]::UTF8; "
-	return commandOutput("powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", prefix+script)
+	out, _ := windowsPowerShellOutputChecked(script)
+	return out
 }
 
-func readNetBytes(ifaces string) NetBytes {
+func windowsPowerShellOutputChecked(script string) (string, error) {
+	prefix := "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $OutputEncoding = [System.Text.Encoding]::UTF8; "
+	return commandOutputChecked("powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", prefix+script)
+}
+
+func readNetBytes(ifaces string) (NetBytes, error) {
 	script := "Get-NetAdapterStatistics | ForEach-Object { \"$($_.Name),$($_.ReceivedBytes),$($_.SentBytes)\" }"
-	out := windowsPowerShellOutput(script)
+	out, err := windowsPowerShellOutputChecked(script)
+	if err != nil {
+		return NetBytes{}, err
+	}
 	wanted := splitInterfaceSet(ifaces)
 	var total NetBytes
+	matched := 0
 	for _, line := range strings.Split(out, "\n") {
 		parts := strings.Split(strings.TrimSpace(line), ",")
 		if len(parts) != 3 {
@@ -72,12 +81,19 @@ func readNetBytes(ifaces string) NetBytes {
 		if len(wanted) > 0 && !wanted[name] {
 			continue
 		}
-		rx, _ := strconv.ParseUint(strings.TrimSpace(parts[1]), 10, 64)
-		tx, _ := strconv.ParseUint(strings.TrimSpace(parts[2]), 10, 64)
+		rx, rxErr := strconv.ParseUint(strings.TrimSpace(parts[1]), 10, 64)
+		tx, txErr := strconv.ParseUint(strings.TrimSpace(parts[2]), 10, 64)
+		if rxErr != nil || txErr != nil {
+			return NetBytes{}, fmt.Errorf("invalid network counters for %s", name)
+		}
 		total.RX += rx
 		total.TX += tx
+		matched++
 	}
-	return total
+	if matched == 0 {
+		return NetBytes{}, fmt.Errorf("no matching network interfaces")
+	}
+	return total, nil
 }
 
 func readDiskIOCounters(_ []DiskDeviceRef) DiskIOCounters {
