@@ -3,6 +3,7 @@
 package cfprobe
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -346,12 +347,15 @@ func requireInstallPermission(paths Paths) error {
 				paths.RunUser, paths.RunUser)
 		}
 		if !systemdUserLingerEnabled(paths.RunUser) {
-			return fmt.Errorf("当前用户 %s 未开启 linger，退出登录后服务将停止\n"+
-				"请执行以下命令后重新安装:\n"+
-				"  loginctl enable-linger\n"+
-				"如无权限，请用 root 执行:\n"+
-				"  loginctl enable-linger %s",
-				paths.RunUser, paths.RunUser)
+			fmt.Printf("[INFO] 当前用户 %s 未开启 linger，正在尝试自动开启 ...\n", paths.RunUser)
+			if err := enableSystemdUserLinger(paths.RunUser); err != nil {
+				return fmt.Errorf("当前用户 %s 未开启 linger，自动开启失败，退出登录后服务将停止\n"+
+					"请用 root 执行以下命令后重新安装:\n"+
+					"  loginctl enable-linger %s\n"+
+					"失败原因: %v",
+					paths.RunUser, paths.RunUser, err)
+			}
+			fmt.Printf("[INFO] 已自动开启 linger，退出登录后服务将继续运行\n")
 		}
 		return nil
 	}
@@ -432,6 +436,36 @@ func systemdUserLingerEnabled(name string) bool {
 		return false
 	}
 	return strings.EqualFold(commandOutput("loginctl", "show-user", name, "-p", "Linger", "--value"), "yes")
+}
+
+// enableSystemdUserLinger tries to enable linger for the current user, which is
+// normally allowed without root through polkit (set-self-linger) while the
+// session is active. Any failure is reported to the caller so that the install
+// does not continue: a user service without linger is killed when the user logs
+// out.
+func enableSystemdUserLinger(name string) error {
+	if runtime.GOOS != "linux" || strings.TrimSpace(name) == "" || !commandExists("loginctl") {
+		return errors.New("loginctl 不可用")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	// --no-ask-password stops loginctl from spawning pkttyagent for an interactive
+	// polkit prompt, so a denied request fails immediately instead of blocking on
+	// /dev/tty; the caller then falls back to the manual instructions.
+	out, err := exec.CommandContext(ctx, "loginctl", "--no-ask-password", "enable-linger", name).CombinedOutput()
+	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return errors.New("执行 loginctl enable-linger 超时")
+		}
+		if msg := strings.TrimSpace(string(out)); msg != "" {
+			return errors.New(msg)
+		}
+		return err
+	}
+	if !systemdUserLingerEnabled(name) {
+		return errors.New("命令执行成功但 linger 仍未生效")
+	}
+	return nil
 }
 
 func checkInstallConflicts(paths Paths) error {
