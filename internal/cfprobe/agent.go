@@ -62,6 +62,9 @@ type Agent struct {
 	// 自动发现拿到但没能写入配置文件的 id，后续上报会重试落盘。
 	pendingPersistID string
 	updateMu         sync.Mutex
+	// configWriteMu 串行化配置文件写入：动态配置下发与 UA 下发是两条独立通道，
+	// 并发写会把对方的字段覆盖回旧值。
+	configWriteMu    sync.Mutex
 	reporter         *reportTransport
 	reportMu         sync.Mutex
 	// reportFailures 是 WSS 与 POST 共用的连续失败计数：握手 401/403、WSS error 帧、
@@ -111,6 +114,8 @@ const (
 	// agentAutoDiscoveryDisabled 是 Agent 本地判定的中止原因：未绑定 id 时收到
 	// 不带自动发现标记的 404，说明服务端没有开启自动发现（或版本过旧），服务端不会返回这个值。
 	agentAutoDiscoveryDisabled = "disabled"
+	// agentUAHeader 是服务端下发自定义 UA 的响应头 / WSS ack 字段名。
+	agentUAHeader = "X-Ua"
 )
 
 // ErrAutoDiscoveryFailed 表示未绑定 server id 且自动建号无法完成（失败或重名），进程应直接退出。
@@ -1007,7 +1012,7 @@ func (a *Agent) postReportBody(cfg Config, body []byte, sampleCount int, fallbac
 		return 0, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	a.setAgentHeaders(req)
+	a.setAgentHeaders(req, cfg)
 	req.Header.Set("X-Agent-Config-Schema", configSchemaVersion)
 	req.Header.Set("X-Agent-Version", a.version)
 	req.Header.Set("X-Agent-Config-Md5", firstNonEmpty(cfg.ConfigMD5, "none"))
@@ -1070,6 +1075,8 @@ func (a *Agent) handleTimedReportResponse(statusCode int, respBody []byte, heade
 	if statusCode < 200 || statusCode >= 300 {
 		return
 	}
+	// 自定义 UA 走独立通道，与配置 md5 无关；值相同时这里只做一次字符串比较。
+	a.applyRemoteUserAgent(headers.Get(agentUAHeader))
 	a.handleWSSRuntimeHeaders(headers)
 	if dateTime, ok := responseDateTime(headers); ok {
 		snapshot, updated := a.clock.updateDate(dateTime, received.Sub(started), received)
@@ -1103,6 +1110,38 @@ func (a *Agent) handleTimedReportResponse(statusCode int, respBody []byte, heade
 			a.lastConfigRejectKey = ""
 		}
 	}
+}
+
+// applyRemoteUserAgent 应用服务端下发的自定义 UA。UA 走独立通道（HTTP 响应头 / WSS ack），
+// 不参与配置 md5，因此这里只在取值不同时才落盘，避免每个上报周期重复写配置文件。
+func (a *Agent) applyRemoteUserAgent(raw string) {
+	if a == nil {
+		return
+	}
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return
+	}
+	if !isValidUserAgent(value) {
+		a.log.warnfOnce("remote-ua-invalid", "服务端下发的自定义 UA 非法，已忽略")
+		return
+	}
+	if a.configSnapshot().UA == value {
+		return
+	}
+	a.configWriteMu.Lock()
+	defer a.configWriteMu.Unlock()
+	next := a.configSnapshot()
+	if next.UA == value {
+		return
+	}
+	next.UA = value
+	if err := writeConfig(a.paths.ConfigFile, next); err != nil {
+		a.log.warnfOnce("remote-ua-write", "自定义 UA 写入配置失败: %v", err)
+		return
+	}
+	a.setConfig(next)
+	a.log.info("custom user agent updated")
 }
 
 func valueOrZero[T ~int64 | ~uint64](value *T) T {
@@ -1357,10 +1396,17 @@ func (a *Agent) applyRemoteConfigWithOptions(body []byte, headers http.Header, a
 		if hasRemoteMD5 {
 			nextCfg.ConfigMD5 = newMD5
 		}
-		if err := writeConfig(a.paths.ConfigFile, nextCfg); err != nil {
-			return err
+		// 与 UA 下发通道串行化：UA 不参与 md5，写盘时保留当前值，避免互相覆盖。
+		a.configWriteMu.Lock()
+		nextCfg.UA = a.configSnapshot().UA
+		writeErr := writeConfig(a.paths.ConfigFile, nextCfg)
+		if writeErr == nil {
+			a.setConfig(nextCfg)
 		}
-		a.setConfig(nextCfg)
+		a.configWriteMu.Unlock()
+		if writeErr != nil {
+			return writeErr
+		}
 		a.resetNetworkBaseline(nextCfg.Interface)
 		a.prevDisk = DiskIOCounters{}
 		a.prevDiskAt = time.Time{}
@@ -1440,9 +1486,9 @@ func inIntSet(v int, allowed ...int) bool {
 	return false
 }
 
-func (a *Agent) setAgentHeaders(req *http.Request) {
+func (a *Agent) setAgentHeaders(req *http.Request, cfg Config) {
 	req.Header.Set("Accept", "*/*")
-	req.Header.Set("User-Agent", "cfsm")
+	req.Header.Set("User-Agent", firstNonEmpty(cfg.UA, defaultUserAgent))
 }
 
 func (a *Agent) sendCorrectionConfirm(cfg Config, rx, tx string) error {
@@ -1464,7 +1510,7 @@ func (a *Agent) sendCorrectionConfirm(cfg Config, rx, tx string) error {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	a.setAgentHeaders(req)
+	a.setAgentHeaders(req, cfg)
 	client := http.Client{Timeout: 4 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {

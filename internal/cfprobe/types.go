@@ -19,6 +19,8 @@ const (
 	connectionModeHTTP       = "http"
 	pingModeTCP              = "tcp"
 	pingModeICMP             = "icmp"
+	defaultUserAgent         = "cfsm"
+	maxUserAgentLength       = 100
 )
 
 type Config struct {
@@ -40,7 +42,10 @@ type Config struct {
 	ResetDay        int
 	ConnectionMode  string
 	PingMode        string
-	AutoUpdate      bool
+	// UA 是上报请求的自定义 User-Agent，由服务端通过独立通道下发（不参与 ConfigMD5 比对），
+	// 本地安装参数 -ua 只作为初值。
+	UA         string
+	AutoUpdate bool
 	UpdateProxy     string
 	// ConfigMD5 mirrors the worker dynamic config version; local fields like
 	// AutoUpdate and UpdateProxy are intentionally outside that comparison.

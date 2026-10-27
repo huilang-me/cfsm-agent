@@ -87,6 +87,7 @@ type wsServerFrame struct {
 	Body                 string `json:"body"`
 	ConfigBody           string `json:"config_body"`
 	Config               any    `json:"config"`
+	UA                   string `json:"ua"`
 	ConfigMD5            string `json:"config_md5"`
 	ConfigMD5Camel       string `json:"configMd5"`
 	MD5                  string `json:"md5"`
@@ -369,7 +370,7 @@ func (r *reportTransport) dial(ctx context.Context) (*webSocketConn, http.Header
 	}
 	headers := http.Header{}
 	headers.Set("Accept", "*/*")
-	headers.Set("User-Agent", "cfsm")
+	headers.Set("User-Agent", firstNonEmpty(cfg.UA, defaultUserAgent))
 	headers.Set("X-Agent-Config-Schema", configSchemaVersion)
 	headers.Set("X-Agent-Version", r.agent.version)
 	headers.Set("X-Agent-Config-Md5", configMD5)
@@ -445,6 +446,10 @@ func (r *reportTransport) readLoop(ctx context.Context, conn *webSocketConn) err
 			// 读超时和 transport 重连兜底，不在此处处理。
 			if !frame.RealtimeHint {
 				r.agent.noteReportSuccess()
+			}
+			// 自定义 UA 与配置下发相互独立：同一帧里可能只有 ua，没有 config。
+			if frame.UA != "" {
+				r.agent.applyRemoteUserAgent(frame.UA)
 			}
 			if body, headers, ok := wssConfigBodyAndHeaders(frame); ok {
 				r.applyConfigBody(body, headers)

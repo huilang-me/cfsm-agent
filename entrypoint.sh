@@ -76,6 +76,14 @@ for key in SERVER_ID SECRET WORKER_URL COLLECT_INTERVAL REPORT_INTERVAL \
 	fi
 done
 
+# 自定义 UA 只作首次引导:配置里没有该键时才写入环境变量值。
+# 服务端会通过 X-Ua / WSS ack 下发并落盘;若每次启动都用旧环境变量覆盖,
+# 面板改过 UA 的容器一重启就回滚成旧值,配合 /update 的防火墙规则会永久离线。
+if env_is_set UA && ! grep -q '^UA=' "$CONFIG"; then
+	eval "value=\${UA}"
+	upsert "UA" "$value"
+fi
+
 # 容器内强制关闭自动更新(此键不受服务端下发影响,持久有效)。
 upsert AUTO_UPDATE "0"
 

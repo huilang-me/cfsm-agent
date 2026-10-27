@@ -152,6 +152,8 @@ func mergeExplicitInstallConfig(dst *Config, src Config, explicit map[string]boo
 			dst.ConnectionMode = src.ConnectionMode
 		case "ping_mode":
 			dst.PingMode = src.PingMode
+		case "ua":
+			dst.UA = src.UA
 		case "auto_update":
 			dst.AutoUpdate = src.AutoUpdate
 		case "install_ghproxy":
