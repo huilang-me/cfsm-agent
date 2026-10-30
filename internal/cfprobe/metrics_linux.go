@@ -507,7 +507,11 @@ func includeLinuxMount(dev, mountPoint, fsType, opts string) bool {
 	if fsTypeLower == "fuseblk" {
 		return true
 	}
-	for _, excluded := range []string{"tmpfs", "devtmpfs", "udev", "nfs", "cifs", "smb", "vboxsf", "9p", "fuse", "overlay", "proc", "devpts", "sysfs", "cgroup", "mqueue", "hugetlbfs", "debugfs", "binfmt_misc", "securityfs"} {
+	// trimafs is fnOS's (飞牛) union/view filesystem mounted at /fs: it exposes the
+	// storage pools that are already mounted under /vol1, /vol2 ... and reports
+	// the same capacity with a different f_fsid, so counting it makes the same
+	// physical disk show up twice (a 2 TB disk reported as ~4 TB).
+	for _, excluded := range []string{"trimafs", "tmpfs", "devtmpfs", "udev", "nfs", "cifs", "smb", "vboxsf", "9p", "fuse", "overlay", "proc", "devpts", "sysfs", "cgroup", "mqueue", "hugetlbfs", "debugfs", "binfmt_misc", "securityfs"} {
 		if fsTypeLower == excluded || strings.HasPrefix(fsTypeLower, excluded) {
 			return false
 		}

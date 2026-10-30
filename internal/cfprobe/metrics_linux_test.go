@@ -70,3 +70,18 @@ func TestDistinctBlockDevices(t *testing.T) {
 		}
 	}
 }
+
+func TestIncludeLinuxMountFnOS(t *testing.T) {
+	// fnOS (飞牛) mounts its union/view filesystem at /fs while the real volume is
+	// mounted at /vol1 (btrfs on LVM). Both report the same capacity but carry a
+	// different f_fsid, so the trimafs view must not be counted on top of it.
+	if includeLinuxMount("trimafs", "/fs", "trimafs", "rw,relatime,trimacl,ino_mode=32") {
+		t.Fatal("trimafs view must not add extra capacity on top of the real volume")
+	}
+	if !includeLinuxMount("/dev/mapper/trim_x-0", "/vol1", "btrfs", "rw,relatime,ssd") {
+		t.Fatal("real btrfs volume must still be counted")
+	}
+	if !includeLinuxMount("/dev/nvme0n1p2", "/", "ext4", "rw,relatime") {
+		t.Fatal("root filesystem must still be counted")
+	}
+}
