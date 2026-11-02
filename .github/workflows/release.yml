@@ -87,7 +87,20 @@ jobs:
           build_one windows arm64 arm64
           build_one windows 386 386
 
-          sha256sum dist/* > dist/checksums.txt
+      # Go 1.21+ marks binaries as requiring Windows 10 in the PE header, which
+      # makes Windows 8 / Server 2012 R2 refuse to start them ("This app can't
+      # run on your PC"). Lower the header, then verify that no dependency has
+      # pulled in an API missing from NT 6.2.
+      - name: Make Windows binaries loadable on Server 2012 R2 / Windows 8
+        run: |
+          set -euo pipefail
+          for bin in dist/cf-probe-windows-*.exe; do
+            go run ./cmd/winsubsys -binary "$bin"
+            go run ./cmd/wincompat -binary "$bin"
+          done
+
+      - name: Write checksums
+        run: sha256sum dist/* > dist/checksums.txt
 
       - name: Upload assets
         env:

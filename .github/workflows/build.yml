@@ -75,3 +75,15 @@ jobs:
           build_one darwin arm64 arm64
           build_one windows amd64 amd64
 
+      # Go 1.21+ marks binaries as requiring Windows 10 in the PE header, which
+      # makes Windows 8 / Server 2012 R2 refuse to start them ("This app can't
+      # run on your PC"). Lower the header, then verify that no dependency has
+      # pulled in an API missing from NT 6.2.
+      - name: Make Windows binary loadable on Server 2012 R2 / Windows 8
+        run: |
+          set -euo pipefail
+          for bin in dist/cf-probe-windows-*.exe; do
+            go run ./cmd/winsubsys -binary "$bin"
+            go run ./cmd/wincompat -binary "$bin"
+          done
+

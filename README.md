@@ -54,9 +54,13 @@ PowerShell -ExecutionPolicy Bypass -File $script install -secret=SECRET -url=WOR
 
 ## Windows 安装
 
+支持 Windows 8 / Windows Server 2012 R2 及以上。Go 1.21 起官方不再支持这两个系统，因此发布的 Windows 产物会把 PE 头的最低系统版本从 10.0 降到 6.02（`cmd/winsubsys`），并校验导入表只使用 NT 6.2 提供的 API（`cmd/wincompat`）。自行编译的二进制需要同样处理，否则会提示“此应用无法在你的电脑上运行”。Windows 7 / Server 2008 R2 不在支持范围。
+
 请使用管理员权限打开 PowerShell，然后执行：
 
 ```powershell
+# Windows 8 / Server 2012 R2 默认只启用 TLS 1.0，GitHub 要求 TLS 1.2+
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 $script = "$env:TEMP\install-cf-probe.ps1"
 Invoke-WebRequest -Uri "https://raw.githubusercontent.com/huilang-me/cfsm-agent/main/install.ps1" -OutFile $script -UseBasicParsing
 PowerShell -ExecutionPolicy Bypass -File $script install -id=SERVER_ID -secret=SECRET -url=WORKER_URL

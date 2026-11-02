@@ -1,5 +1,14 @@
 ﻿$ErrorActionPreference = "Stop"
 
+# Windows Server 2012 R2 / Windows 8 ship PowerShell 4, whose default security
+# protocol is still TLS 1.0; GitHub only accepts TLS 1.2+. Newer .NET reports
+# SystemDefault (0), which already negotiates the best protocol, so TLS 1.2 is
+# only added when an explicit protocol list is configured.
+$cfSecurityProtocol = [int][Net.ServicePointManager]::SecurityProtocol
+if ($cfSecurityProtocol -ne 0) {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]($cfSecurityProtocol -bor [int][Net.SecurityProtocolType]::Tls12)
+}
+
 # Installing/uninstalling writes to C:\Program Files and registers a SYSTEM
 # scheduled task, both of which require an elevated (administrator) session.
 # Fail fast with a clear prompt instead of a raw "Access is denied" later.
