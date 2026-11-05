@@ -73,6 +73,50 @@ func diskUsageMBFromBlocks(blocks, bfree uint64, bsize int64) (uint64, uint64, b
 	return total, used, total > 0
 }
 
+// diskUsageEntry is one mounted filesystem counted towards disk capacity and
+// usage. overlayView marks a container overlayfs mount, whose statfs reports
+// the backing filesystem's block counts while carrying its own f_fsid.
+type diskUsageEntry struct {
+	total       uint64
+	used        uint64
+	device      DiskDeviceRef
+	hasDevice   bool
+	overlayView bool
+}
+
+func isOverlayViewMount(fsType string) bool {
+	return strings.HasPrefix(strings.ToLower(fsType), "overlay")
+}
+
+// dropOverlayViewDuplicates removes overlayfs views that mirror a real block
+// device already counted.
+//
+// Inside a container the root ("/") is an overlayfs view: statfs passes through
+// the backing filesystem's block counts, but the kernel synthesizes a different
+// f_fsid, so fsid dedup cannot fold it into a bind mount of the same disk (for
+// example a -v volume at "/data"). The disk then shows up twice. Matching on
+// identical total+used is safe because only an overlay entry is ever dropped,
+// and only when a real block device reports exactly the same numbers; an
+// overlay whose backing disk is not otherwise mounted (multi-disk host) is
+// still counted on its own.
+func dropOverlayViewDuplicates(entries map[string]diskUsageEntry) {
+	realCapacity := make(map[[2]uint64]struct{}, len(entries))
+	for _, entry := range entries {
+		if entry.overlayView || !entry.hasDevice || entry.device.Major == 0 {
+			continue
+		}
+		realCapacity[[2]uint64{entry.total, entry.used}] = struct{}{}
+	}
+	for key, entry := range entries {
+		if !entry.overlayView {
+			continue
+		}
+		if _, ok := realCapacity[[2]uint64{entry.total, entry.used}]; ok {
+			delete(entries, key)
+		}
+	}
+}
+
 func memoryUsedMBFromKB(total, available, free, buffers, cached uint64) uint64 {
 	if available == 0 {
 		available = free + buffers + cached

@@ -253,3 +253,83 @@ func TestGPUMetricJSONIncludesDetailFields(t *testing.T) {
 		t.Fatalf("got %s, want %s", data, want)
 	}
 }
+
+func TestDropOverlayViewDuplicatesMergesContainerRoot(t *testing.T) {
+	// A container root overlay and a bind-mounted volume of the same disk
+	// report identical capacity and usage but carry different f_fsid; only the
+	// real block device must be counted.
+	entries := map[string]diskUsageEntry{
+		"fsid:1:1": {total: 9800, used: 6700, device: DiskDeviceRef{Key: "overlay", Major: 0, Minor: 44}, hasDevice: true, overlayView: true},
+		"fsid:2:2": {total: 9800, used: 6700, device: DiskDeviceRef{Key: "/dev/sda1", Major: 8, Minor: 1}, hasDevice: true},
+	}
+	dropOverlayViewDuplicates(entries)
+	if len(entries) != 1 {
+		t.Fatalf("got %d entries, want 1: %+v", len(entries), entries)
+	}
+	if _, ok := entries["fsid:2:2"]; !ok {
+		t.Fatalf("real block device must be kept, got %+v", entries)
+	}
+}
+
+func TestDropOverlayViewDuplicatesKeepsLoneOverlay(t *testing.T) {
+	// No other mount exposes the backing disk (single container without
+	// volumes): the overlay root is the only capacity source and must stay.
+	entries := map[string]diskUsageEntry{
+		"fsid:1:1": {total: 9800, used: 6700, device: DiskDeviceRef{Major: 0, Minor: 44}, hasDevice: true, overlayView: true},
+	}
+	dropOverlayViewDuplicates(entries)
+	if len(entries) != 1 {
+		t.Fatalf("got %d entries, want 1", len(entries))
+	}
+}
+
+func TestDropOverlayViewDuplicatesKeepsDistinctDisks(t *testing.T) {
+	// Multi-disk host: the overlay root is the host root disk, the volume lives
+	// on another disk, so both must be counted.
+	entries := map[string]diskUsageEntry{
+		"fsid:1:1": {total: 9800, used: 6700, device: DiskDeviceRef{Major: 0, Minor: 44}, hasDevice: true, overlayView: true},
+		"fsid:2:2": {total: 19600, used: 100, device: DiskDeviceRef{Key: "/dev/sdb1", Major: 8, Minor: 17}, hasDevice: true},
+	}
+	dropOverlayViewDuplicates(entries)
+	if len(entries) != 2 {
+		t.Fatalf("got %d entries, want 2", len(entries))
+	}
+}
+
+func TestDropOverlayViewDuplicatesRequiresSameUsage(t *testing.T) {
+	// Same capacity but different usage means different filesystems; never merge.
+	entries := map[string]diskUsageEntry{
+		"fsid:1:1": {total: 9800, used: 6700, device: DiskDeviceRef{Major: 0, Minor: 44}, hasDevice: true, overlayView: true},
+		"fsid:2:2": {total: 9800, used: 100, device: DiskDeviceRef{Key: "/dev/sda1", Major: 8, Minor: 1}, hasDevice: true},
+	}
+	dropOverlayViewDuplicates(entries)
+	if len(entries) != 2 {
+		t.Fatalf("got %d entries, want 2", len(entries))
+	}
+}
+
+func TestDropOverlayViewDuplicatesNeverMergesRealDisks(t *testing.T) {
+	// Two identical real disks (cloned images) must stay separate even though
+	// their numbers match.
+	entries := map[string]diskUsageEntry{
+		"fsid:1:1": {total: 9800, used: 6700, device: DiskDeviceRef{Key: "/dev/sda1", Major: 8, Minor: 1}, hasDevice: true},
+		"fsid:2:2": {total: 9800, used: 6700, device: DiskDeviceRef{Key: "/dev/sdb1", Major: 8, Minor: 17}, hasDevice: true},
+	}
+	dropOverlayViewDuplicates(entries)
+	if len(entries) != 2 {
+		t.Fatalf("got %d entries, want 2", len(entries))
+	}
+}
+
+func TestIsOverlayViewMount(t *testing.T) {
+	for _, fsType := range []string{"overlay", "Overlay", "overlayfs"} {
+		if !isOverlayViewMount(fsType) {
+			t.Fatalf("%q must be treated as an overlay view", fsType)
+		}
+	}
+	for _, fsType := range []string{"ext4", "btrfs", "xfs", "zfs", "tmpfs"} {
+		if isOverlayViewMount(fsType) {
+			t.Fatalf("%q must not be treated as an overlay view", fsType)
+		}
+	}
+}

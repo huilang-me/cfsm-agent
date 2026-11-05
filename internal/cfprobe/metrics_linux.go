@@ -281,13 +281,6 @@ func linuxConnCount(name string) int {
 	return count
 }
 
-type diskUsageEntry struct {
-	total     uint64
-	used      uint64
-	device    DiskDeviceRef
-	hasDevice bool
-}
-
 func diskUsageLinux() (uint64, uint64, []DiskDeviceRef) {
 	devices := map[string]diskUsageEntry{}
 	_ = scanFile("/proc/mounts", func(line string) {
@@ -319,12 +312,16 @@ func diskUsageLinux() (uint64, uint64, []DiskDeviceRef) {
 			}
 		}
 		device, hasDevice := linuxDiskDeviceRef(dev, mountPoint, deviceID)
-		entry := diskUsageEntry{total: size, used: used, device: device, hasDevice: hasDevice}
+		entry := diskUsageEntry{
+			total:       size,
+			used:        used,
+			device:      device,
+			hasDevice:   hasDevice,
+			overlayView: isOverlayViewMount(fsType),
+		}
 		// Dedup by the underlying filesystem id (statfs f_fsid) rather than the
-		// device name, so a single physical disk is counted once even when it
-		// appears twice inside a container: once as the overlay root ("/") and
-		// again as a bind-mounted volume (e.g. "/data"), which carry different
-		// device strings but share f_fsid. Fall back to the device string when
+		// device name, so a single physical disk is counted once when it is
+		// bind-mounted at several paths. Fall back to the device string when
 		// f_fsid is unset so distinct real disks are never wrongly merged.
 		dedupKey := linuxMountFsidKey(&st)
 		if existing, ok := devices[dedupKey]; dedupKey == "" {
@@ -338,6 +335,10 @@ func diskUsageLinux() (uint64, uint64, []DiskDeviceRef) {
 			devices[dedupKey] = entry
 		}
 	})
+	// f_fsid cannot fold an overlayfs view into its backing filesystem: the
+	// overlay root reports the same block counts as the real device but the
+	// kernel gives it a synthesized f_fsid. Merge those views explicitly.
+	dropOverlayViewDuplicates(devices)
 	var total, used uint64
 	diskDevices := make([]DiskDeviceRef, 0, len(devices))
 	for _, entry := range devices {
