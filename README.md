@@ -489,7 +489,7 @@ WSS 握手会携带标准 WebSocket Upgrade 头，并附带以下 Agent 头：
 
 除安装脚本外，也可以把 Agent 以容器方式运行。镜像以 `cf-probe run` 前台模式启动，后台常驻、开机自启和崩溃重启都交给 Docker 的重启策略；容器内不使用 systemd/launchd，也不会触碰裸机安装路径。
 
-镜像发布在 `ghcr.io/<owner>/cfsm-agent`，提供 `latest`、版本号和 commit sha 标签（多架构 `linux/amd64`、`linux/arm64`）。
+镜像发布在 `ghcr.io/<owner>/cfsm-agent`，提供 `latest`、版本号和 commit sha 标签（多架构 `linux/amd64`、`linux/arm64`）。预发布通道为 `:snapshot`，始终指向最新一次 `main` 构建；同一镜像另带与 GitHub 预发布同名的 `Snapshot-<YYMMDDHHMM>` 时间戳标签，便于固定版本，旧的时间戳镜像只保留最新一份。
 
 推荐以 host 网络模式运行，这样网卡流量、月流量和 TCP/UDP 连接数才是宿主机的真实数据：
 

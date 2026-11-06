@@ -195,8 +195,11 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist
+          # 版本号必须来自 snapshot job 的 output：镜像 tag、release tag 和二进制
+          # 内嵌版本共用同一个字符串，docker job 里不再取一次时间，避免跨分钟漂移。
           if [ -z "${VERSION}" ]; then
-            VERSION="Snapshot-${GITHUB_SHA::7}"
+            echo "missing snapshot version output; refusing to build an image whose tag cannot match the release" >&2
+            exit 1
           fi
           LDFLAGS="-s -w -X main.version=${VERSION}"
           echo "Docker binary version: ${VERSION}"
@@ -223,8 +226,10 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
             type=raw,value=snapshot
+            type=raw,value=${{ needs.snapshot.outputs.version }}
 
       - name: Build and push Docker image
+        id: build-push
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -234,3 +239,56 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           no-cache: true
           provenance: false
+
+      # 快照镜像只保留最新一份。删除对象必须同时满足：
+      #   1. 该 version 有 tag，且**全部** tag 都形如 Snapshot-<10位时间戳>；
+      #   2. 不含 latest / v* / sha-* 等正式版或手动标签；
+      #   3. digest 不是本次刚推送的那个。
+      # 因此 v1.x 之类手动 tag、latest、sha-* 以及浮动 tag snapshot 都不会被删除。
+      - name: Prune older snapshot images
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PUSHED_DIGEST: ${{ steps.build-push.outputs.digest }}
+        run: |
+          set -euo pipefail
+          if [ -z "${PUSHED_DIGEST}" ]; then
+            echo "missing pushed image digest, skip pruning to avoid deleting the live snapshot" >&2
+            exit 0
+          fi
+          owner="${GITHUB_REPOSITORY%%/*}"
+          pkg="$(printf '%s' "${GITHUB_REPOSITORY##*/}" | tr '[:upper:]' '[:lower:]')"
+
+          query='.[]
+            | select((.metadata.container.tags // []) | length > 0)
+            | select((.metadata.container.tags | map(test("^Snapshot-[0-9]{10}$")) | all))
+            | select((.metadata.container.tags | map(test("^(latest|v[0-9]|sha-)")) | any) | not)
+            | [.id, .created_at, .name] | @tsv'
+
+          base=""
+          versions=""
+          for scope in users orgs; do
+            if out="$(gh api --paginate "/${scope}/${owner}/packages/container/${pkg}/versions?per_page=100" --jq "$query" 2>/dev/null)"; then
+              base="/${scope}/${owner}/packages/container/${pkg}"
+              versions="$out"
+              break
+            fi
+          done
+          if [ -z "$base" ]; then
+            echo "container package ${pkg} not found under ${owner}, skip pruning" >&2
+            exit 0
+          fi
+          if [ -z "$versions" ]; then
+            echo "no older snapshot image versions to prune"
+            exit 0
+          fi
+
+          printf '%s\n' "$versions" | while IFS="$(printf '\t')" read -r id created digest; do
+            [ -n "$id" ] || continue
+            if [ -n "${PUSHED_DIGEST}" ] && [ "$digest" = "${PUSHED_DIGEST}" ]; then
+              echo "keep ${digest} (just pushed)"
+              continue
+            fi
+            echo "pruning snapshot image version ${id} (${created}, ${digest})"
+            gh api -X DELETE "${base}/versions/${id}" || echo "failed to delete ${id}" >&2
+          done
