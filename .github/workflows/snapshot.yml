@@ -240,11 +240,15 @@ jobs:
           no-cache: true
           provenance: false
 
-      # 快照镜像只保留最新一份。删除对象必须同时满足：
-      #   1. 该 version 有 tag，且**全部** tag 都形如 Snapshot-<10位时间戳>；
-      #   2. 不含 latest / v* / sha-* 等正式版或手动标签；
-      #   3. digest 不是本次刚推送的那个。
-      # 因此 v1.x 之类手动 tag、latest、sha-* 以及浮动 tag snapshot 都不会被删除。
+      # 快照镜像只保留最新一份，并连带清理它的平台子 manifest，做到“推一次净增 0”。
+      #
+      # 删除对象必须同时满足：
+      #   1. 该 version 只有一个 tag，且形如 Snapshot-<10位时间戳>；
+      #   2. digest 不是本次刚推送的那个（当前镜像同时带 snapshot 标签，天然不匹配）。
+      # 因此 latest / v* / sha-* / 手动标签 / 浮动 tag snapshot 都不会被删除。
+      #
+      # 顺序固定为「取子 digest -> 删索引 -> 删子 manifest」：先删子 manifest 会让仍被
+      # tag 指向的索引短暂损坏。子 manifest 自身带 tag、或等于刚推送的 digest 时跳过。
       - name: Prune older snapshot images
         continue-on-error: true
         env:
@@ -258,17 +262,15 @@ jobs:
           fi
           owner="${GITHUB_REPOSITORY%%/*}"
           pkg="$(printf '%s' "${GITHUB_REPOSITORY##*/}" | tr '[:upper:]' '[:lower:]')"
+          image="${REGISTRY}/${IMAGE_NAME}"
 
-          query='.[]
-            | select((.metadata.container.tags // []) | length > 0)
-            | select((.metadata.container.tags | map(test("^Snapshot-[0-9]{10}$")) | all))
-            | select((.metadata.container.tags | map(test("^(latest|v[0-9]|sha-)")) | any) | not)
-            | [.id, .created_at, .name] | @tsv'
-
+          # 一次取全量版本：id、逗号分隔的 tags、digest。多 tag 的 version 其 tags 字段
+          # 会带逗号，下面的“单 tag”正则因此天然把它排除。
           base=""
           versions=""
           for scope in users orgs; do
-            if out="$(gh api --paginate "/${scope}/${owner}/packages/container/${pkg}/versions?per_page=100" --jq "$query" 2>/dev/null)"; then
+            if out="$(gh api --paginate "/${scope}/${owner}/packages/container/${pkg}/versions?per_page=100" \
+                 --jq '.[] | [.id, ((.metadata.container.tags // []) | join(",")), .name] | @tsv' 2>/dev/null)"; then
               base="/${scope}/${owner}/packages/container/${pkg}"
               versions="$out"
               break
@@ -278,17 +280,53 @@ jobs:
             echo "container package ${pkg} not found under ${owner}, skip pruning" >&2
             exit 0
           fi
-          if [ -z "$versions" ]; then
-            echo "no older snapshot image versions to prune"
-            exit 0
-          fi
 
-          printf '%s\n' "$versions" | while IFS="$(printf '\t')" read -r id created digest; do
-            [ -n "$id" ] || continue
-            if [ -n "${PUSHED_DIGEST}" ] && [ "$digest" = "${PUSHED_DIGEST}" ]; then
+          pruned=0
+          while IFS="$(printf '\t')" read -r id tags digest; do
+            if [ -z "$id" ]; then
+              continue
+            fi
+            if [ "$digest" = "${PUSHED_DIGEST}" ]; then
               echo "keep ${digest} (just pushed)"
               continue
             fi
-            echo "pruning snapshot image version ${id} (${created}, ${digest})"
-            gh api -X DELETE "${base}/versions/${id}" || echo "failed to delete ${id}" >&2
-          done
+            if [[ ! "$tags" =~ ^Snapshot-[0-9]{10}$ ]]; then
+              continue
+            fi
+
+            # 先取子 digest，再删索引；取不到时只删索引，残留的子 manifest 交给人工脚本兜底。
+            children=""
+            if raw="$(docker buildx imagetools inspect --raw "${image}@${digest}" 2>/dev/null)"; then
+              children="$(printf '%s' "$raw" | jq -r '.manifests[]?.digest' 2>/dev/null || true)"
+            else
+              echo "warn: cannot read manifest of ${digest}, its child manifests may stay behind" >&2
+            fi
+
+            echo "pruning snapshot index ${id} (${digest})"
+            if ! gh api -X DELETE "${base}/versions/${id}"; then
+              echo "failed to delete index ${id}" >&2
+              continue
+            fi
+            pruned=$((pruned + 1))
+
+            for child in $children; do
+              if [ "$child" = "${PUSHED_DIGEST}" ]; then
+                continue
+              fi
+              row="$(printf '%s\n' "$versions" | awk -F'\t' -v d="$child" '$3==d {print $1"\t"$2; exit}')"
+              if [ -z "$row" ]; then
+                echo "warn: child ${child} not listed, skip" >&2
+                continue
+              fi
+              child_id="$(printf '%s' "$row" | cut -f1)"
+              child_tags="$(printf '%s' "$row" | cut -f2)"
+              if [ -n "$child_tags" ]; then
+                echo "keep child ${child_id} (tagged: ${child_tags})"
+                continue
+              fi
+              echo "pruning child manifest ${child_id} (${child})"
+              gh api -X DELETE "${base}/versions/${child_id}" || echo "failed to delete child ${child_id}" >&2
+            done
+          done <<< "$versions"
+
+          echo "pruned ${pruned} snapshot index(es)"

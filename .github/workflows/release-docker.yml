@@ -87,3 +87,7 @@ jobs:
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # 不生成 provenance/SBOM 证明：它们会在索引里多挂 1-2 个无 tag 的
+          # attestation manifest，既拉长版本列表，也让快照清理难以判断哪些
+          # 子 manifest 可以回收。
+          provenance: false
