@@ -323,7 +323,8 @@ func diskUsageLinux() (uint64, uint64, []DiskDeviceRef) {
 		// device name, so a single physical disk is counted once when it is
 		// bind-mounted at several paths. Fall back to the device string when
 		// f_fsid is unset so distinct real disks are never wrongly merged.
-		dedupKey := linuxMountFsidKey(&st)
+		// ZFS datasets are the exception: see linuxMountDedupKey.
+		dedupKey := linuxMountDedupKey(fsType, deviceID, &st)
 		if existing, ok := devices[dedupKey]; dedupKey == "" {
 			dedupKey = deviceID
 		} else if ok && distinctBlockDevices(deviceID, existing.device.Key) {
@@ -362,6 +363,19 @@ func linuxMountFsidKey(st *syscall.Statfs_t) string {
 		return ""
 	}
 	return fmt.Sprintf("fsid:%d:%d", int64(st.Fsid.X__val[0]), int64(st.Fsid.X__val[1]))
+}
+
+// linuxMountDedupKey builds the dedup key for one mount. ZFS datasets of the
+// same pool share one capacity pool but carry a distinct f_fsid each, so f_fsid
+// would count every dataset of a container host separately (Incus/LXD, TrueNAS,
+// Proxmox, CSI). Fold them by pool name instead: deviceID has already been
+// truncated to the pool for zfs, and diskEntryPreferred keeps the largest view
+// of that pool. Every other filesystem keeps the f_fsid key unchanged.
+func linuxMountDedupKey(fsType, deviceID string, st *syscall.Statfs_t) string {
+	if strings.EqualFold(fsType, "zfs") && deviceID != "" {
+		return "zfs:" + deviceID
+	}
+	return linuxMountFsidKey(st)
 }
 
 // distinctBlockDevices reports whether two mount sources are two *different*

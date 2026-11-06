@@ -31,6 +31,43 @@ func TestLinuxMountFsidKey(t *testing.T) {
 	}
 }
 
+func TestLinuxMountDedupKey(t *testing.T) {
+	var st syscall.Statfs_t
+	st.Fsid.X__val[0] = 7
+	st.Fsid.X__val[1] = 11
+
+	// Non-zfs filesystems must keep the exact key they had before, otherwise
+	// dedup results on every other host would change.
+	for _, fsType := range []string{"ext4", "xfs", "btrfs", "overlay", "trimafs", "vfat"} {
+		if got, want := linuxMountDedupKey(fsType, "/dev/sda2", &st), linuxMountFsidKey(&st); got != want {
+			t.Fatalf("%s: key changed, got %q want %q", fsType, got, want)
+		}
+	}
+
+	// ZFS: datasets of one pool fold together, different pools never do, and
+	// the f_fsid is ignored because it differs per dataset.
+	if got, want := linuxMountDedupKey("zfs", "default", &st), "zfs:default"; got != want {
+		t.Fatalf("zfs pool key: got %q want %q", got, want)
+	}
+	if linuxMountDedupKey("zfs", "default", &st) != linuxMountDedupKey("ZFS", "default", &st) {
+		t.Fatal("zfs key must be case-insensitive on the fs type")
+	}
+	if linuxMountDedupKey("zfs", "default", &st) == linuxMountDedupKey("zfs", "tank", &st) {
+		t.Fatal("different pools must not fold")
+	}
+	st2 := st
+	st2.Fsid.X__val[1] = 99
+	if linuxMountDedupKey("zfs", "default", &st) != linuxMountDedupKey("zfs", "default", &st2) {
+		t.Fatal("zfs key must not depend on f_fsid")
+	}
+
+	// Unknown source falls back to the old behaviour instead of collapsing
+	// every anonymous zfs mount into one entry.
+	if got, want := linuxMountDedupKey("zfs", "", &st), linuxMountFsidKey(&st); got != want {
+		t.Fatalf("empty zfs source must fall back, got %q want %q", got, want)
+	}
+}
+
 func TestDiskEntryPreferred(t *testing.T) {
 	realDev := diskUsageEntry{total: 100, used: 50, device: DiskDeviceRef{Major: 8}, hasDevice: true}
 	overlay := diskUsageEntry{total: 100, used: 50, device: DiskDeviceRef{Major: 0}}
