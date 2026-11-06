@@ -581,8 +581,14 @@ type runningProbeInstance struct {
 }
 
 func checkOtherUserProbeRunning() error {
+	selfInContainer := currentProcessInContainer()
+	var containers []runningProbeInstance
 	for _, inst := range runningProbeInstances() {
 		if inst.UID == currentUID() {
+			continue
+		}
+		if skipForeignProbeInstance(selfInContainer, processInContainer(inst.PID)) {
+			containers = append(containers, inst)
 			continue
 		}
 		if inst.Legacy {
@@ -592,35 +598,88 @@ func checkOtherUserProbeRunning() error {
 		return fmt.Errorf("检测到 cf-probe 已由用户 %s(uid=%d, pid=%d) 运行，命令: %s；请先停止该实例后再安装",
 			firstNonEmpty(inst.User, strconv.Itoa(inst.UID)), inst.UID, inst.PID, firstNonEmpty(inst.Cmd, inst.Exe))
 	}
+	if len(containers) > 0 {
+		printContainerProbeInstances(containers)
+	}
 	return nil
 }
 
+// stopCurrentUserProbeInstances stops the instances that belong to the same
+// installation scope as the caller. Container-hosted instances are left alone:
+// they live in their own mount namespace and are managed through Docker.
+// When the caller itself runs inside a container the previous fail-closed
+// behaviour is kept, so two installs inside one container still replace each
+// other.
 func stopCurrentUserProbeInstances() {
-	for _, inst := range runningProbeInstances() {
-		if inst.UID == currentUID() {
-			signalProbeInstance(inst.PID, syscall.SIGTERM)
+	selfInContainer := currentProcessInContainer()
+	killable := func() []runningProbeInstance {
+		var out []runningProbeInstance
+		for _, inst := range runningProbeInstances() {
+			if inst.UID != currentUID() {
+				continue
+			}
+			if skipForeignProbeInstance(selfInContainer, processInContainer(inst.PID)) {
+				continue
+			}
+			out = append(out, inst)
 		}
+		return out
+	}
+	for _, inst := range killable() {
+		signalProbeInstance(inst.PID, syscall.SIGTERM)
 	}
 	for i := 0; i < 20; i++ {
-		if !currentUserProbeRunning() {
+		if len(killable()) == 0 {
 			return
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	for _, inst := range runningProbeInstances() {
-		if inst.UID == currentUID() {
-			signalProbeInstance(inst.PID, syscall.SIGKILL)
-		}
+	for _, inst := range killable() {
+		signalProbeInstance(inst.PID, syscall.SIGKILL)
 	}
 }
 
-func currentUserProbeRunning() bool {
-	for _, inst := range runningProbeInstances() {
-		if inst.UID == currentUID() {
+func printContainerProbeInstances(instances []runningProbeInstance) {
+	const shown = 3
+	fmt.Printf("[WARN] 检测到 %d 个运行在容器内的 cf-probe 实例，本次安装将跳过它们（不会停止容器）\n", len(instances))
+	for i, inst := range instances {
+		if i == shown {
+			fmt.Printf("[WARN] 其余 %d 个容器实例已省略\n", len(instances)-shown)
+			break
+		}
+		fmt.Printf("[WARN]   pid=%d 用户=%s 命令=%s\n", inst.PID,
+			firstNonEmpty(inst.User, strconv.Itoa(inst.UID)), firstNonEmpty(inst.Cmd, inst.Exe))
+	}
+	fmt.Println("[WARN] 请确保容器实例与本机安装使用不同的 SERVER_ID，否则会出现重复上报")
+}
+
+// currentProcessInContainer reports whether the running binary itself is inside
+// a container. The marker files cover images that predate cgroup detection; the
+// Docker image drops /.cf-probe-container for exactly this purpose.
+func currentProcessInContainer() bool {
+	if runtime.GOOS != "linux" {
+		return false
+	}
+	if processInContainer(os.Getpid()) {
+		return true
+	}
+	for _, marker := range []string{"/.dockerenv", "/run/.containerenv", "/.cf-probe-container"} {
+		if fileExists(marker) {
 			return true
 		}
 	}
 	return false
+}
+
+func processInContainer(pid int) bool {
+	if runtime.GOOS != "linux" || pid <= 0 {
+		return false
+	}
+	data, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "cgroup"))
+	if err != nil {
+		return false
+	}
+	return cgroupIndicatesContainer(string(data))
 }
 
 func signalProbeInstance(pid int, sig syscall.Signal) {
