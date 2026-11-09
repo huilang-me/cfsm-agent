@@ -1165,9 +1165,8 @@ func (a *Agent) networkWorker(ctx context.Context) {
 			snap := ProbeSnapshot{}
 			needUpdate := false
 			if lastIP.IsZero() || now.Sub(lastIP) >= 10*time.Minute {
-				usePublicDNS := usePublicDNSResolver(cfg)
-				snap.IPv4 = lookupPublicIP("tcp4", a.log, usePublicDNS)
-				snap.IPv6 = lookupPublicIP("tcp6", a.log, usePublicDNS)
+				snap.IPv4 = lookupPublicIP("tcp4", a.log, cfg.WorkerURL)
+				snap.IPv6 = lookupPublicIP("tcp6", a.log, cfg.WorkerURL)
 				lastIP = now
 				needUpdate = true
 			}
