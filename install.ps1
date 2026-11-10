@@ -79,7 +79,7 @@ $arch = Get-ArchName
 $asset = "cf-probe-windows-$arch.exe"
 $path = if ($InstallVersion -eq "latest") { "latest/download" } else { "download/$InstallVersion" }
 $url = "https://github.com/$Repo/releases/$path/$asset"
-if ($GitHubProxy) {
+if ($GitHubProxy -and -not $url.StartsWith($GitHubProxy.TrimEnd("/") + "/", [System.StringComparison]::Ordinal)) {
     $url = $GitHubProxy.TrimEnd("/") + "/" + $url
 }
 
