@@ -220,7 +220,7 @@ else
     path="download/$INSTALL_VERSION"
 fi
 url="https://github.com/$REPO/releases/$path/$asset"
-if [ -n "$GITHUB_PROXY" ]; then
+if [ -n "$GITHUB_PROXY" ] && [ "${url#"${GITHUB_PROXY%/}/"}" = "$url" ]; then
     url="${GITHUB_PROXY%/}/$url"
 fi
 
