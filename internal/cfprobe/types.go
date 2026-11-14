@@ -53,6 +53,8 @@ type Config struct {
 }
 
 type Paths struct {
+	// Instance 为空表示默认实例（历史行为，路径与服务名保持 cf-probe 不变）。
+	Instance        string
 	ServiceName     string
 	BinaryFile      string
 	ConfigDir       string
@@ -74,10 +76,16 @@ type Paths struct {
 
 type InstallOptions struct {
 	Config
+	Instance       string
 	Debug          bool
 	RXCorrectionGB string
 	TXCorrectionGB string
 	Explicit       map[string]bool
+}
+
+type UninstallOptions struct {
+	Instance string
+	All      bool
 }
 
 type ProbeResult struct {

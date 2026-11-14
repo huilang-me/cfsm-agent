@@ -342,7 +342,7 @@ func scheduleUpdateInstall(paths Paths, binPath string, now int64) (string, erro
 	if paths.UserMode {
 		return scheduleUserModeUpdateInstall(paths, binPath)
 	}
-	return scheduleUnixUpdateInstall(paths.ServiceName, paths.LogFile, binPath, now)
+	return scheduleUnixUpdateInstall(paths.ServiceName, paths.Instance, paths.LogFile, binPath, now)
 }
 
 // fetchUpdateBinary 通过更新专用 HTTP 客户端下载目标版本二进制到配置目录，
@@ -503,9 +503,13 @@ func verifyFileSHA256(path, expected string) error {
 	}
 	return nil
 }
-func scheduleUnixUpdateInstall(serviceName, logFile, binPath string, now int64) (string, error) {
-	cmdLine := fmt.Sprintf("sleep %d; %s install; rm -f %s",
-		int(autoUpdateDelay.Seconds()), quoteShell(binPath), quoteShell(binPath))
+func scheduleUnixUpdateInstall(serviceName, instance, logFile, binPath string, now int64) (string, error) {
+	installArgs := "install"
+	if instance != "" {
+		installArgs += " -instance=" + instance
+	}
+	cmdLine := fmt.Sprintf("sleep %d; %s %s; rm -f %s",
+		int(autoUpdateDelay.Seconds()), quoteShell(binPath), installArgs, quoteShell(binPath))
 	if runtime.GOOS == "linux" && !isSynology() && fileExists("/run/systemd/system") {
 		unit := fmt.Sprintf("%s-auto-update-%d", serviceName, now)
 		if commandExists("systemd-run") {
@@ -532,10 +536,14 @@ func scheduleUnixUpdateInstall(serviceName, logFile, binPath string, now int64) 
 }
 
 func scheduleWindowsUpdateInstall(paths Paths, binPath string) (string, error) {
+	applyArgs := "upgrade-apply"
+	if paths.Instance != "" {
+		applyArgs += " -instance=" + paths.Instance
+	}
 	script := strings.Join([]string{
 		"$ErrorActionPreference = 'Continue'",
 		fmt.Sprintf("Start-Sleep -Seconds %d", int(autoUpdateDelay.Seconds())),
-		"& " + powerShellLiteral(binPath) + " upgrade-apply >> " + powerShellLiteral(paths.LogFile) + " 2>&1",
+		"& " + powerShellLiteral(binPath) + " " + applyArgs + " >> " + powerShellLiteral(paths.LogFile) + " 2>&1",
 		"if ($LASTEXITCODE -eq 0) { Remove-Item -LiteralPath " + powerShellLiteral(binPath) + " -Force -ErrorAction SilentlyContinue }",
 	}, "; ")
 	cmd := exec.Command("powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", script)
@@ -546,11 +554,11 @@ func scheduleWindowsUpdateInstall(paths Paths, binPath string) (string, error) {
 	return "powershell", nil
 }
 
-func ApplyScheduledUpdate(buildVersion string) error {
+func ApplyScheduledUpdate(instance, buildVersion string) error {
 	if runtime.GOOS != "windows" {
 		return errors.New("scheduled upgrade apply is only supported on Windows")
 	}
-	paths := defaultPaths()
+	paths := pathsForInstance(instance)
 	fmt.Printf("[INFO] applying scheduled update version=%s target=%s\n", buildVersion, paths.BinaryFile)
 	return applyWindowsScheduledUpdate(paths)
 }

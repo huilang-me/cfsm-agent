@@ -3,8 +3,12 @@ package cfprobe
 import "testing"
 
 func TestParseUninstallArgsAllowsNoArgs(t *testing.T) {
-	if err := parseUninstallArgs(nil); err != nil {
+	opts, err := parseUninstallArgs(nil)
+	if err != nil {
 		t.Fatalf("parseUninstallArgs(nil) error = %v", err)
+	}
+	if opts.Instance != "" || opts.All {
+		t.Fatalf("parseUninstallArgs(nil) = %+v, want default instance", opts)
 	}
 }
 
@@ -40,10 +44,86 @@ func TestParseUninstallArgsRejectsExtraArgs(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if err := parseUninstallArgs(tt.args); err == nil {
+			if _, err := parseUninstallArgs(tt.args); err == nil {
 				t.Fatalf("parseUninstallArgs(%v) expected error", tt.args)
 			}
 		})
+	}
+}
+
+func TestParseUninstallArgsInstanceAndAll(t *testing.T) {
+	opts, err := parseUninstallArgs([]string{"-instance=eth1"})
+	if err != nil {
+		t.Fatalf("parseUninstallArgs(-instance=eth1) error = %v", err)
+	}
+	if opts.Instance != "eth1" || opts.All {
+		t.Fatalf("opts = %+v, want instance eth1", opts)
+	}
+
+	opts, err = parseUninstallArgs([]string{"--all"})
+	if err != nil {
+		t.Fatalf("parseUninstallArgs(--all) error = %v", err)
+	}
+	if !opts.All || opts.Instance != "" {
+		t.Fatalf("opts = %+v, want all", opts)
+	}
+
+	if _, err := parseUninstallArgs([]string{"-instance=eth1", "--all"}); err == nil {
+		t.Fatal("parseUninstallArgs(-instance + --all) expected error")
+	}
+	if _, err := parseUninstallArgs([]string{"-instance=bad name"}); err == nil {
+		t.Fatal("parseUninstallArgs(invalid instance) expected error")
+	}
+}
+
+func TestParseUninstallArgsIgnoresBootstrapFlags(t *testing.T) {
+	opts, err := parseUninstallArgs([]string{
+		"-instance=eth1",
+		"--install-version=Snapshot-2611140423",
+		"--install-ghproxy=https://gh-proxy.example.com",
+	})
+	if err != nil {
+		t.Fatalf("parseUninstallArgs() error = %v", err)
+	}
+	if opts.Instance != "eth1" || opts.All {
+		t.Fatalf("opts = %+v, want instance eth1", opts)
+	}
+}
+
+func TestParseInstallOptionsInstance(t *testing.T) {
+	got, err := parseInstallOptions([]string{"-instance=eth1"})
+	if err != nil {
+		t.Fatalf("parseInstallOptions(-instance=eth1) error = %v", err)
+	}
+	if got.Instance != "eth1" {
+		t.Fatalf("Instance = %q, want eth1", got.Instance)
+	}
+	if !got.Explicit["instance"] {
+		t.Fatalf("Explicit[instance] = false, want true (all: %v)", got.Explicit)
+	}
+
+	if _, err := parseInstallOptions([]string{"-instance=bad/name"}); err == nil {
+		t.Fatal("parseInstallOptions(invalid instance) expected error")
+	}
+}
+
+func TestParseRunOptionsInstance(t *testing.T) {
+	instance, debug, configFile, err := parseRunOptions([]string{"-instance=eth1", "-config=/tmp/config.conf", "-debug=1"})
+	if err != nil {
+		t.Fatalf("parseRunOptions() error = %v", err)
+	}
+	if instance != "eth1" || !debug || configFile != "/tmp/config.conf" {
+		t.Fatalf("got instance=%q debug=%v config=%q", instance, debug, configFile)
+	}
+}
+
+func TestParseUpgradeApplyOptionsInstance(t *testing.T) {
+	instance, err := parseUpgradeApplyOptions([]string{"-instance=eth1"})
+	if err != nil {
+		t.Fatalf("parseUpgradeApplyOptions() error = %v", err)
+	}
+	if instance != "eth1" {
+		t.Fatalf("instance = %q, want eth1", instance)
 	}
 }
 

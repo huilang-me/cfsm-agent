@@ -134,7 +134,7 @@ run_payload() {
     shift
     case "${cmd:-${1:-install}}" in
         uninstall|remove|delete|purge)
-            "$bin" "$cmd"
+            "$bin" "$@"
             return
             ;;
     esac

@@ -25,19 +25,24 @@ func Execute(args []string, buildVersion string) error {
 		}
 		return Install(opts, buildVersion)
 	case "run", "start-foreground":
-		debug, configFile, err := parseRunOptions(args[1:])
+		instance, debug, configFile, err := parseRunOptions(args[1:])
 		if err != nil {
 			return err
 		}
-		return Run(configFile, debug, buildVersion)
+		return Run(instance, configFile, debug, buildVersion)
 	case "uninstall", "remove", "delete", "purge":
-		if err := parseUninstallArgs(args[1:]); err != nil {
+		opts, err := parseUninstallArgs(args[1:])
+		if err != nil {
 			printUsage(os.Stderr)
 			return err
 		}
-		return Uninstall(buildVersion)
+		return Uninstall(opts, buildVersion)
 	case "upgrade-apply":
-		return ApplyScheduledUpdate(buildVersion)
+		instance, err := parseUpgradeApplyOptions(args[1:])
+		if err != nil {
+			return err
+		}
+		return ApplyScheduledUpdate(instance, buildVersion)
 	case "version", "-v", "--version":
 		fmt.Printf("CF-Server-Monitor Go Probe %s\n", buildVersion)
 		return nil
@@ -57,6 +62,7 @@ func parseInstallOptions(args []string) (InstallOptions, error) {
 	var autoUpdate, debug string
 	var ignoredInstallVersion string
 	fs.StringVar(&opts.ServerID, "id", "", "")
+	fs.StringVar(&opts.Instance, "instance", "", "")
 	fs.StringVar(&opts.Name, "name", "", "")
 	fs.StringVar(&opts.Secret, "secret", "", "")
 	fs.StringVar(&opts.WorkerURL, "url", "", "")
@@ -97,6 +103,10 @@ func parseInstallOptions(args []string) (InstallOptions, error) {
 		opts.Explicit[canonicalInstallFlag(f.Name)] = true
 	})
 	var err error
+	opts.Instance, err = normalizeInstanceName(opts.Instance)
+	if err != nil {
+		return opts, err
+	}
 	opts.AutoUpdate, err = normalizeBinaryValue(autoUpdate, false)
 	if err != nil {
 		return opts, fmt.Errorf("auto_update 参数非法: %w", err)
@@ -137,30 +147,63 @@ func canonicalInstallFlag(name string) string {
 	}
 }
 
-func parseRunOptions(args []string) (bool, string, error) {
+func parseRunOptions(args []string) (string, bool, string, error) {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	var debugRaw string
 	var configFile string
+	var instance string
 	fs.StringVar(&debugRaw, "debug", "0", "")
 	fs.StringVar(&configFile, "config", "", "")
+	fs.StringVar(&instance, "instance", "", "")
 	if err := fs.Parse(args); err != nil {
-		return false, "", err
+		return "", false, "", err
+	}
+	instance, err := normalizeInstanceName(instance)
+	if err != nil {
+		return "", false, "", err
 	}
 	debug, err := normalizeBinaryValue(debugRaw, false)
-	return debug, configFile, err
+	return instance, debug, configFile, err
 }
 
-func parseUninstallArgs(args []string) error {
+func parseUninstallArgs(args []string) (UninstallOptions, error) {
+	var opts UninstallOptions
 	fs := flag.NewFlagSet("uninstall", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
+	fs.StringVar(&opts.Instance, "instance", "", "")
+	fs.BoolVar(&opts.All, "all", false, "")
+	// 安装脚本会把 bootstrap 专用的参数原样透传给载荷；卸载时忽略即可，
+	// 否则 uninstall --install-version=... 会报 flag provided but not defined。
+	var ignoredInstallVersion, ignoredInstallProxy string
+	fs.StringVar(&ignoredInstallVersion, "install-version", "", "")
+	fs.StringVar(&ignoredInstallProxy, "install-ghproxy", "", "")
 	if err := fs.Parse(args); err != nil {
-		return err
+		return opts, err
 	}
 	if fs.NArg() > 0 {
-		return fmt.Errorf("uninstall 不支持参数: %s", strings.Join(fs.Args(), " "))
+		return opts, fmt.Errorf("uninstall 不支持参数: %s", strings.Join(fs.Args(), " "))
 	}
-	return nil
+	instance, err := normalizeInstanceName(opts.Instance)
+	if err != nil {
+		return opts, err
+	}
+	opts.Instance = instance
+	if opts.Instance != "" && opts.All {
+		return opts, fmt.Errorf("-instance 与 --all 不能同时使用")
+	}
+	return opts, nil
+}
+
+func parseUpgradeApplyOptions(args []string) (string, error) {
+	fs := flag.NewFlagSet("upgrade-apply", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	var instance string
+	fs.StringVar(&instance, "instance", "", "")
+	if err := fs.Parse(args); err != nil {
+		return "", err
+	}
+	return normalizeInstanceName(instance)
 }
 
 func printUsage(w io.Writer) {
@@ -168,9 +211,10 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "  cf-probe install -id=SERVER_ID -secret=SECRET -url=WORKER_URL [选项]")
 	fmt.Fprintln(w, "  cf-probe install -secret=SECRET -url=WORKER_URL [-name=NAME]   # 不传 -id，由服务端自动建号")
 	fmt.Fprintln(w, "  cf-probe run [-debug=0|1]")
-	fmt.Fprintln(w, "  cf-probe uninstall")
+	fmt.Fprintln(w, "  cf-probe uninstall [-instance=NAME|--all]")
 	fmt.Fprintln(w, "")
 	fmt.Fprintln(w, "安装选项:")
+	fmt.Fprintln(w, "  -instance=NAME       安装为独立实例，可与默认实例并存（如 eth1）；名称会转为小写，不传则覆盖默认实例")
 	fmt.Fprintln(w, "  -id=SERVER_ID        服务器 ID；服务端开启自动发现时可省略")
 	fmt.Fprintln(w, "  -name=NAME           自动建号时的服务器名称，默认使用公网 IP")
 	fmt.Fprintln(w, "  -secret=SECRET       服务器密钥（首次安装必填）")

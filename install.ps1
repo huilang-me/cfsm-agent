@@ -72,7 +72,6 @@ $command = if ($args.Count -gt 0) { $args[0] } else { "install" }
 $payloadArgs = @($args)
 if ($command -in @("uninstall", "remove", "delete", "purge")) {
     Write-Host "[INFO] downloading temporary uninstaller"
-    $payloadArgs = @($command)
 }
 
 $arch = Get-ArchName

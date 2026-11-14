@@ -66,7 +66,7 @@ Invoke-WebRequest -Uri "https://raw.githubusercontent.com/huilang-me/cfsm-agent/
 PowerShell -ExecutionPolicy Bypass -File $script install -id=SERVER_ID -secret=SECRET -url=WORKER_URL
 ```
 
-Windows 上如果安装时开启 `-auto_update=1`，自动更新会下载并执行 `C:\ProgramData\cf-probe\cf-probe-update.exe`，部分杀毒软件或安全策略可能拦截。被拦截时请将 `C:\Program Files\cf-probe\cf-probe.exe`、`C:\ProgramData\cf-probe\cf-probe-update.exe`、`C:\ProgramData\cf-probe\cf-probe.cmd` 加入白名单；如环境不允许放行，建议保持 `-auto_update=0`，需要升级时手动指定版本安装。
+Windows 上如果安装时开启 `-auto_update=1`，自动更新会下载并执行 `C:\ProgramData\cf-probe\cf-probe-update.exe`，部分杀毒软件或安全策略可能拦截。被拦截时请将 `C:\Program Files\cf-probe\cf-probe.exe`、`C:\ProgramData\cf-probe\cf-probe-update.exe`、`C:\ProgramData\cf-probe\cf-probe.cmd` 加入白名单；如环境不允许放行，建议保持 `-auto_update=0`，需要升级时手动指定版本安装。使用 `-instance=NAME` 时对应路径为 `cf-probe-NAME.exe`、`%ProgramData%\cf-probe-NAME\`。
 
 ## 指定版本或 GitHub 代理
 
@@ -87,6 +87,7 @@ curl -fsSL https://raw.githubusercontent.com/huilang-me/cfsm-agent/main/install.
 | 参数 | 说明 | 默认值 |
 | --- | --- | --- |
 | `-id=SERVER_ID` | 服务器 ID，首次安装必填；服务端开启自动发现时可省略 | 无 |
+| `-instance=NAME` | 安装为独立实例（如 `eth1`），可与默认实例及其他命名实例并存；不传则覆盖默认实例 | 空 |
 | `-name=NAME` | 自动建号时的服务器名称，未传则使用本机公网 IPv4（无 IPv4 时用 IPv6） | 公网 IP |
 | `-secret=SECRET` | 服务器密钥，首次安装必填 | 无 |
 | `-url=WORKER_URL` | Worker 上报地址，首次安装必填 | 无 |
@@ -108,11 +109,27 @@ curl -fsSL https://raw.githubusercontent.com/huilang-me/cfsm-agent/main/install.
 
 再次执行 `install` 时，如果本机已有配置文件，程序会以已有配置为基础，只覆盖本次显式传入的参数，未传入的参数保留旧值（例如只传 `-auto_update=1` 就只修改自动更新开关）。首次安装（本机无已有配置）时 `-secret`、`-url` 必填；`-id` 在服务端开启自动发现时可省略，具体见[自动发现安装](#自动发现安装不传--id)。
 
+### 多实例（同一用户监控不同网卡）
+
+默认一个用户只运行一份 agent，重复 `install` 会覆盖默认实例。需要同时监控多张网卡时，用 `-instance=NAME` 安装独立实例，例如：
+
+```bash
+# 默认实例监控 eth0
+curl -fsSL https://raw.githubusercontent.com/huilang-me/cfsm-agent/main/install.sh | sh -s -- install -id=ID1 -secret=SECRET -url=WORKER_URL -interface=eth0
+
+# 命名实例监控 eth1，与默认实例并存
+curl -fsSL https://raw.githubusercontent.com/huilang-me/cfsm-agent/main/install.sh | sh -s -- install -instance=eth1 -id=ID2 -secret=SECRET -url=WORKER_URL -interface=eth1
+```
+
+命名实例会使用独立的服务名（`cf-probe-NAME`）、配置目录（`~/.cf-probe-NAME` 或 `/etc/config/cf-probe-NAME`）、二进制、pid/日志、启动项和运行锁；安装、重装或卸载一个实例不会影响其他实例。`NAME` 只允许字母、数字、下划线、连字符，1-32 位，且必须以字母或数字开头；名称会统一转为小写（macOS/Windows 文件系统大小写不敏感，避免 `eth1` 与 `ETH1` 映射到同一套路径）。该能力以 Linux 为主要验证目标，macOS/Windows 使用相同的命名后缀机制。
+
+每个实例都会作为独立服务器上报，必须使用不同的 `SERVER_ID`；使用自动发现时请为每个实例传不同的 `-name`，否则同名建号会失败。除 `-interface` 指定的网卡流量外，CPU、内存、磁盘等系统指标会被各实例分别上报一份。
+
 自动更新默认关闭。安装时传入 `-auto_update=1` 后，Agent 启动时会检查 GitHub release，之后每 6 小时检查一次；稳定版按版本号更新，`Snapshot-` 版本会跟随最新可用 Snapshot prerelease。自动更新只由本地 `AUTO_UPDATE` 配置控制，不依赖面板返回 `update=1`。如果安装时配置了 `--install-ghproxy`，代理会写入本地配置并用于后续自动更新；该本地字段不参与远端配置 MD5 对比。自动更新的检查结果、调度结果和失败原因始终以 info 级日志输出，无需开启 debug；系统级 nohup 环境下安装过程的输出会追加到 `/var/log/cf-probe.log`，systemd 环境可通过 `journalctl -u 'cf-probe-auto-update-*'` 查看。
 
 自动更新要求目标 release 提供 `checksums.txt`，且其中包含对应资产的 SHA-256；校验文件不可用、校验不符、下载为空或超出 512 MiB 时会停止本次更新，继续运行当前版本。Linux ARM32 按当前二进制构建时的 `GOARM` 选择 `armv5`、`armv6` 或 `armv7` 资产；无法确定兼容级别时跳过自动更新。ARMv6/v7 的软浮点构建也会跳过自动更新，避免替换为需要硬件浮点的发布资产。
 
-普通用户安装时，自动更新会在 `~/.cf-probe/` 内下载并替换当前用户的二进制，随后退出当前进程，由 `systemd --user` 或 macOS LaunchAgent 按服务重启策略拉起新版本；不会触碰 root 路径或系统级服务。
+普通用户安装时，自动更新会在 `~/.cf-probe/`（命名实例为 `~/.cf-probe-NAME/`）内下载并替换当前用户的二进制，随后退出当前进程，由 `systemd --user` 或 macOS LaunchAgent 按服务重启策略拉起新版本；不会触碰 root 路径或系统级服务。
 
 更新检查（`api.github.com`）、新二进制下载（`github.com`）和指标上报的 DNS 解析默认使用系统原生 DNS；仅在配置了 `--install-ghproxy`（通常为系统 DNS 被污染的国内服务器）或通过环境变量 `CF_PROBE_UPDATE_DNS` 显式指定 DNS 服务器时，才启用 Agent 内置的公共 DNS 轮询解析（阿里、DNSPod、114、Cloudflare、Google，UDP 53），此时不依赖系统 DNS，内置 DNS 全部不可用时回退系统 DNS。公网 IP 查询是例外：始终走系统 DNS 并直连，不使用代理环境变量，也不使用内置公共 DNS（走代理会取到代理出口地址而非本机公网 IP）。`CF_PROBE_UPDATE_DNS` 会自动补全 `:53` 端口（如 `CF_PROBE_UPDATE_DNS=223.5.5.5`）。root/system 模式更新时 Agent 会把新二进制下载到配置目录，再调度新二进制执行自身的 `install` 完成替换并重启服务；普通用户模式按上一段直接自替换。两种模式都不经过 install.sh 和 curl；下载或调度失败时旧版本不受影响，下次检查自动重试。如 `github.com` 完全不可达，可配置 `--install-ghproxy` 代理（仅用于二进制文件下载；`api.github.com` 的版本检查始终直连，gh-proxy 类服务不支持 API 转发）。
 
@@ -147,9 +164,9 @@ MIPS（常见于 OpenWrt 路由器）资产统一使用 `GOMIPS=softfloat` 构�
 | macOS (`LaunchAgent`) | `~/.cf-probe/bin/cf-probe` | `~/.cf-probe/config.conf` | `~/.cf-probe/cf-probe.log` |
 | Windows | `C:\Program Files\cf-probe\cf-probe.exe` | `C:\ProgramData\cf-probe\config.conf` | `C:\ProgramData\cf-probe\cf-probe.log` |
 
-服务名固定为 `cf-probe`。服务会根据系统自动注册为 `systemd`、`OpenRC`、`procd`、`launchd`、Synology rc、Windows 计划任务，或在不支持服务管理器的环境中后台运行。
+服务名默认为 `cf-probe`；使用 `-instance=NAME` 安装时服务名、配置目录、二进制和日志都带 `-NAME` 后缀（如 `cf-probe-eth1`、`~/.cf-probe-eth1`、`/usr/local/bin/cf-probe-eth1`）。服务会根据系统自动注册为 `systemd`、`OpenRC`、`procd`、`launchd`、Synology rc、Windows 计划任务，或在不支持服务管理器的环境中后台运行。
 
-Linux 普通用户安装固定使用 `systemd --user`；root 安装仍使用系统级服务。macOS 固定使用当前用户 LaunchAgent，不再安装 root/system 版。普通用户安装会阻止与其他用户或 root 版实例重复运行，但允许覆盖安装当前用户自己的运行实例。
+Linux 普通用户安装固定使用 `systemd --user`；root 安装仍使用系统级服务。macOS 固定使用当前用户 LaunchAgent，不再安装 root/system 版。同一实例名仍会阻止与其他用户或 root 版重复运行，但不同实例名（包括默认实例与命名实例）可以并存；重装同一实例会覆盖当前用户自己的运行实例。
 
 ## 查看状态和日志
 
@@ -213,6 +230,15 @@ curl -fsSL https://raw.githubusercontent.com/huilang-me/cfsm-agent/main/install.
 ```
 
 普通用户执行卸载只清理当前用户的 `~/.cf-probe/`、支持 `systemd --user` 的 Linux 用户服务或 macOS LaunchAgent 自启动项；Synology DSM、OpenWrt、Alpine/OpenRC 以及其他系统级安装请使用 root 权限卸载。root 执行卸载清理系统级安装。macOS root 卸载会同时清理 sudo 调用者对应的用户版安装；旧 root/system 版请先执行 `sudo /usr/local/bin/cf-probe uninstall` 清理，再以普通用户安装。
+
+使用 `-instance=NAME` 安装的实例需要指定实例名卸载；`--all` 会卸载默认实例和当前权限范围内的所有命名实例：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/huilang-me/cfsm-agent/main/install.sh | sh -s -- uninstall -instance=eth1
+curl -fsSL https://raw.githubusercontent.com/huilang-me/cfsm-agent/main/install.sh | sh -s -- uninstall --all
+```
+
+不带参数卸载只清理默认实例，不会影响命名实例。
 
 Windows 请使用管理员权限打开 PowerShell：
 

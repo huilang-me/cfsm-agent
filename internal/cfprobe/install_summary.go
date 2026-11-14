@@ -108,9 +108,14 @@ func managementCommands(paths Paths, system string) []managementCommand {
 		}
 	case "synology-rc":
 		rcFile := synologyServiceFile(paths)
+		pattern := paths.ServiceName
+		if pattern != "" {
+			// 用 [c]f-probe-NAME 形式避免 grep 自身命中；默认实例输出与历史一致。
+			pattern = "[" + pattern[:1] + "]" + pattern[1:]
+		}
 		return []managementCommand{
 			{labelRealtimeLog, "tail -f " + quoteShell(paths.LogFile)},
-			{labelStatus, "ps | grep '[c]f-probe'"},
+			{labelStatus, "ps | grep '" + pattern + "'"},
 			{labelStop, rcFile + " stop"},
 		}
 	case "windows":
