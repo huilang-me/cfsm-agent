@@ -3,10 +3,7 @@ package cfprobe
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net"
-	"net/http"
-	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -18,9 +15,6 @@ import (
 
 const (
 	defaultPingTimeout      = 1500 * time.Millisecond
-	highLatencyThresholdMS  = 1000
-	pingHighLatencyRetries  = 3
-	retryDropThresholdTCPMS = 800
 	defaultTaskPingTCPPort  = 80
 	defaultMetricsTCPPort   = 80
 	dnsCacheTTL             = 30 * time.Minute
@@ -130,69 +124,6 @@ func tcpPing(target string, defaultPort int, timeout time.Duration) (int, error)
 	return ms, nil
 }
 
-func httpPing(target string, timeout time.Duration) (int, error) {
-	raw := strings.TrimSpace(target)
-	if raw == "" {
-		return -1, errors.New("empty target")
-	}
-	if strings.Contains(raw, ":") && !strings.Contains(raw, "[") {
-		if ip := net.ParseIP(raw); ip != nil && ip.To4() == nil {
-			raw = "[" + raw + "]"
-		}
-	}
-	if !strings.HasPrefix(raw, "http://") && !strings.HasPrefix(raw, "https://") {
-		raw = "http://" + raw
-	}
-	parsed, err := url.Parse(raw)
-	if err != nil {
-		return -1, err
-	}
-	targetHost := strings.Trim(parsed.Hostname(), "[]")
-	if targetHost == "" {
-		return -1, errors.New("empty host")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	targetIP, err := resolveFirstIP(ctx, targetHost)
-	cancel()
-	if err != nil {
-		return -1, err
-	}
-	transport := &http.Transport{
-		DisableKeepAlives: true,
-		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			host, port, err := net.SplitHostPort(addr)
-			if err != nil {
-				return nil, err
-			}
-			ip := targetIP
-			if strings.Trim(host, "[]") != targetHost {
-				resolved, err := resolveFirstIP(ctx, host)
-				if err != nil {
-					return nil, err
-				}
-				ip = resolved
-			}
-			return net.DialTimeout(network, net.JoinHostPort(ip, port), timeout)
-		},
-	}
-	defer transport.CloseIdleConnections()
-	client := http.Client{Timeout: timeout, Transport: transport}
-	start := time.Now()
-	resp, err := client.Get(parsed.String())
-	ms := int(time.Since(start).Milliseconds())
-	if ms < 1 {
-		ms = 1
-	}
-	if err != nil {
-		return -1, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 200 && resp.StatusCode < 400 {
-		return ms, nil
-	}
-	return ms, fmt.Errorf("http status %d", resp.StatusCode)
-}
-
 func icmpPing(target string, timeout time.Duration) (int, error) {
 	host, _, err := splitProbeTarget(target, defaultTaskPingTCPPort)
 	if err != nil {
@@ -293,48 +224,3 @@ func medianInt(values []int) int {
 	return median
 }
 
-func measurePing(kind, target string, timeout time.Duration) (int, error) {
-	return measurePingWithRetries(kind, target, timeout, defaultTaskPingTCPPort)
-}
-
-func measurePingWithRetries(kind, target string, timeout time.Duration, defaultPort int) (int, error) {
-	return retryMeasuredPing(kind, func() (int, error) {
-		switch kind {
-		case "icmp":
-			return icmpPing(target, timeout)
-		case "tcp":
-			return tcpPing(target, defaultPort, timeout)
-		case "http":
-			return httpPing(target, timeout)
-		default:
-			return -1, fmt.Errorf("unsupported ping type %q", kind)
-		}
-	})
-}
-
-func retryMeasuredPing(kind string, measure func() (int, error)) (int, error) {
-	latency, err := measure()
-	if err != nil {
-		return -1, err
-	}
-	firstLatency := latency
-	if latency <= highLatencyThresholdMS || pingHighLatencyRetries <= 0 {
-		return latency, nil
-	}
-	for i := 0; i < pingHighLatencyRetries; i++ {
-		second, err := measure()
-		if err != nil {
-			return -1, err
-		}
-		if second <= highLatencyThresholdMS {
-			if kind == "tcp" && firstLatency-second > retryDropThresholdTCPMS {
-				return -1, errors.New("suspicious retransmission detected in tcp handshake")
-			}
-			return second, nil
-		}
-		if i == pingHighLatencyRetries-1 {
-			return -1, errors.New("latency remains high after retries")
-		}
-	}
-	return latency, nil
-}

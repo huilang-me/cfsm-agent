@@ -18,10 +18,6 @@ import (
 	"time"
 )
 
-func defaultPaths() Paths {
-	return pathsForInstance("")
-}
-
 func pathsForInstance(instance string) Paths {
 	if !isRootUser() {
 		return currentUserPathsForInstance(instance)
@@ -1062,14 +1058,6 @@ func isSynology() bool {
 		}
 	}
 	return false
-}
-
-func executableForRelease(goos, goarch string) string {
-	name := fmt.Sprintf("cf-probe-%s-%s", goos, goarch)
-	if goos == "windows" {
-		name += ".exe"
-	}
-	return name
 }
 
 func isRootUser() bool {

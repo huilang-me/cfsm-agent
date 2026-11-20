@@ -368,10 +368,6 @@ func (a *Agent) currentWSSReportIntervalForConfig(cfg Config) time.Duration {
 	return reportInterval
 }
 
-func (a *Agent) persistentUsesWSS() bool {
-	return persistentUsesWSSConfig(a.configSnapshot())
-}
-
 func persistentUsesWSSConfig(cfg Config) bool {
 	mode, err := normalizeConnectionMode(cfg.ConnectionMode)
 	if err != nil {
@@ -1051,11 +1047,6 @@ func (a *Agent) metricsForReport(m Metrics, reportAt time.Time) map[string]any {
 		metrics["boot_time"] = strconv.FormatInt(a.clock.correctLocalTimestamp(bootTime, reportAt), 10)
 	}
 	return metrics
-}
-
-func (a *Agent) handleReportResponse(statusCode int, respBody []byte, headers http.Header) {
-	now := time.Now()
-	a.handleTimedReportResponse(statusCode, respBody, headers, now, now)
 }
 
 func (a *Agent) handleTimedReportResponse(statusCode int, respBody []byte, headers http.Header, started, received time.Time) {

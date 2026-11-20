@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 	"unicode/utf16"
@@ -29,10 +28,6 @@ const windowsResumeEventSubscription = `<QueryList>
     <Select Path="System">*[System[Provider[@Name='Microsoft-Windows-Kernel-Power'] and EventID=107]]</Select>
   </Query>
 </QueryList>`
-
-func defaultPaths() Paths {
-	return pathsForInstance("")
-}
 
 func pathsForInstance(instance string) Paths {
 	serviceName := instanceServiceName(instance)
@@ -760,19 +755,7 @@ func isSynology() bool {
 	return false
 }
 
-func executableForRelease(goos, goarch string) string {
-	name := fmt.Sprintf("cf-probe-%s-%s", goos, goarch)
-	if goos == "windows" {
-		name += ".exe"
-	}
-	return name
-}
-
 var errWindowsService = errors.New("Windows 计划任务创建失败，请确认以管理员身份运行 PowerShell")
-
-func runtimeGOOS() string {
-	return runtime.GOOS
-}
 
 func isRootUser() bool {
 	return false

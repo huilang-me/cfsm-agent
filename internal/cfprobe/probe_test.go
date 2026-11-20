@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net"
-	"strings"
 	"testing"
 	"time"
 )
@@ -118,83 +117,6 @@ func TestResolveFirstIPSkipsDNSForIPLiteral(t *testing.T) {
 	}
 	if calls != 0 {
 		t.Fatalf("lookup calls = %d, want 0", calls)
-	}
-}
-
-func TestRetryMeasuredPingAcceptsLowLatency(t *testing.T) {
-	calls := 0
-	got, err := retryMeasuredPing("tcp", func() (int, error) {
-		calls++
-		return 42, nil
-	})
-	if err != nil {
-		t.Fatalf("retryMeasuredPing returned error: %v", err)
-	}
-	if got != 42 || calls != 1 {
-		t.Fatalf("got latency=%d calls=%d, want latency=42 calls=1", got, calls)
-	}
-}
-
-func TestRetryMeasuredPingRejectsSuspiciousTCPRetransmission(t *testing.T) {
-	values := []int{1200, 100}
-	calls := 0
-	got, err := retryMeasuredPing("tcp", func() (int, error) {
-		v := values[calls]
-		calls++
-		return v, nil
-	})
-	if err == nil || !strings.Contains(err.Error(), "suspicious retransmission") {
-		t.Fatalf("error = %v, want suspicious retransmission", err)
-	}
-	if got != -1 || calls != 2 {
-		t.Fatalf("got latency=%d calls=%d, want latency=-1 calls=2", got, calls)
-	}
-}
-
-func TestRetryMeasuredPingAcceptsRecoveredHTTP(t *testing.T) {
-	values := []int{1200, 100}
-	calls := 0
-	got, err := retryMeasuredPing("http", func() (int, error) {
-		v := values[calls]
-		calls++
-		return v, nil
-	})
-	if err != nil {
-		t.Fatalf("retryMeasuredPing returned error: %v", err)
-	}
-	if got != 100 || calls != 2 {
-		t.Fatalf("got latency=%d calls=%d, want latency=100 calls=2", got, calls)
-	}
-}
-
-func TestRetryMeasuredPingRejectsPersistentHighLatency(t *testing.T) {
-	calls := 0
-	got, err := retryMeasuredPing("icmp", func() (int, error) {
-		calls++
-		return 1200, nil
-	})
-	if err == nil || !strings.Contains(err.Error(), "latency remains high") {
-		t.Fatalf("error = %v, want latency remains high", err)
-	}
-	if got != -1 || calls != 4 {
-		t.Fatalf("got latency=%d calls=%d, want latency=-1 calls=4", got, calls)
-	}
-}
-
-func TestRetryMeasuredPingStopsOnRetryError(t *testing.T) {
-	calls := 0
-	got, err := retryMeasuredPing("tcp", func() (int, error) {
-		calls++
-		if calls == 2 {
-			return -1, errors.New("dial failed")
-		}
-		return 1200, nil
-	})
-	if err == nil || err.Error() != "dial failed" {
-		t.Fatalf("error = %v, want dial failed", err)
-	}
-	if got != -1 || calls != 2 {
-		t.Fatalf("got latency=%d calls=%d, want latency=-1 calls=2", got, calls)
 	}
 }
 

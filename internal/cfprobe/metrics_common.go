@@ -2,7 +2,6 @@ package cfprobe
 
 import (
 	"bufio"
-	"encoding/json"
 	"math"
 	"os"
 	"path/filepath"
@@ -378,14 +377,6 @@ func sampleMetricsToMap(m Metrics) map[string]any {
 		"net_in_speed":  m.NetInSpeed,
 		"net_out_speed": m.NetOutSpeed,
 	}
-}
-
-func toJSONSize(v any) int {
-	data, err := json.Marshal(v)
-	if err != nil {
-		return 0
-	}
-	return len(data)
 }
 
 func fallbackArch() string {

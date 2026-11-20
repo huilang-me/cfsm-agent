@@ -5,7 +5,6 @@ package cfprobe
 import (
 	"errors"
 	"runtime"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -87,7 +86,3 @@ func commandLineCount(name string, args ...string) int {
 	return count
 }
 
-func parseInt(raw string) int {
-	n, _ := strconv.Atoi(strings.TrimSpace(raw))
-	return n
-}
